@@ -88,8 +88,26 @@ export const SYNC_KIND_LABEL: Record<string, string> = {
   translate_store: "Translate store",
   language: "Language",
   automatic: "Automatic",
-  resource: "One resource",
+  resource: "Resources",
 };
+
+/**
+ * What a sync is called where its row is known. A `resource` sync is either
+ * one resource a person translated from the editor, or the products Shopify
+ * reported changed and the app collected into one run
+ * (docs/translations.md § Automatic translation).
+ */
+export function syncName(sync: {
+  kind: string;
+  requestedBy: string | null;
+  resources: number;
+}): string {
+  if (sync.kind !== "resource") return SYNC_KIND_LABEL[sync.kind] ?? sync.kind;
+  if (sync.requestedBy !== null) return "One resource";
+  return sync.resources === 1
+    ? "One changed product"
+    : `${sync.resources.toLocaleString("en")} changed products`;
+}
 
 export const ITEM_STATUS_LABEL: Record<string, string> = {
   translated: "Translated",

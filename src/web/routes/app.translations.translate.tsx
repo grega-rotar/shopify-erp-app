@@ -27,6 +27,7 @@ import {
   type ContentGroup,
   type SyncMode,
 } from "~/domain/translations/types";
+import { PageColumns } from "~/web/components/page-columns";
 import { TranslationsNav } from "~/web/components/translations-nav";
 import { formatDateTime } from "~/web/lib/datetime";
 import {
@@ -195,7 +196,7 @@ export default function TranslateStore() {
     );
 
   return (
-    <s-page heading="Translate store" inlineSize="base">
+    <s-page heading="Translate store" inlineSize="large">
       <s-link slot="breadcrumb-actions" href={TRANSLATION_ROUTES.languages}>
         Translations
       </s-link>
@@ -227,114 +228,87 @@ export default function TranslateStore() {
           </s-banner>
         ) : null}
 
-        <s-section heading="1. Source">
-          <s-text>
-            {data.primary
-              ? `${localeLabel(data.primary.locale, data.primary.name)} — the store's default language. A resource written in another language, as set in the editor, is translated from that language directly.`
-              : "Shopify reports no default language."}
-          </s-text>
-        </s-section>
-
-        <s-section heading="2. Languages">
-          <s-stack direction="block" gap="small-300">
-            {data.languages.length === 0 ? (
-              <s-text color="subdued">
-                No other languages yet. Add one first.
-              </s-text>
-            ) : null}
-            {data.languages.map((language) => (
-              <s-checkbox
-                key={language.locale}
-                label={localeLabel(language.locale, language.name)}
-                details={[
-                  language.published ? "Published" : "Unpublished",
-                  language.aiEnabled
-                    ? "AI on"
-                    : "AI off — its overwrite policy still applies",
-                ].join(" · ")}
-                checked={locales.includes(language.locale)}
-                onChange={(event) =>
-                  setLocales((now) =>
-                    event.currentTarget.checked
-                      ? [...now, language.locale]
-                      : now.filter((l) => l !== language.locale),
-                  )
-                }
-                {...(busy ? { disabled: true } : {})}
-              />
-            ))}
-          </s-stack>
-        </s-section>
-
-        <s-section heading="3. Content">
-          <s-stack direction="block" gap="small-300">
-            {ALL_CONTENT_GROUPS.map((group) => (
-              <s-checkbox
-                key={group}
-                label={CONTENT_GROUPS[group].label}
-                checked={groups.includes(group)}
-                onChange={(event) =>
-                  setGroups((now) =>
-                    event.currentTarget.checked
-                      ? [...new Set([...now, group])]
-                      : now.filter((g) => g !== group),
-                  )
-                }
-                {...(busy ? { disabled: true } : {})}
-              />
-            ))}
-          </s-stack>
-        </s-section>
-
-        <s-section heading="4. Mode">
-          <s-choice-list
-            label="What to translate"
-            labelAccessibilityVisibility="exclusive"
-            name="mode"
-            values={[mode]}
-            onChange={(event) => {
-              const next = event.currentTarget.values[0];
-              if (
-                next === "missing" ||
-                next === "missing_outdated" ||
-                next === "force"
-              )
-                setMode(next);
-            }}
-            {...(busy ? { disabled: true } : {})}
-          >
-            <s-choice value="missing">
-              {SYNC_MODE_LABEL.missing}
-              <s-text slot="details">
-                Fields with no translation yet. Nothing existing is touched.
-              </s-text>
-            </s-choice>
-            <s-choice value="missing_outdated">
-              {SYNC_MODE_LABEL.missing_outdated}
-              <s-text slot="details">
-                Also translations Shopify marks outdated, within each
-                language&apos;s overwrite policy.
-              </s-text>
-            </s-choice>
-            <s-choice value="force">
-              {SYNC_MODE_LABEL.force}
-              <s-text slot="details">
-                Every field in scope goes to the AI again. Human translations
-                are still protected unless a language allows overwriting them.
-              </s-text>
-            </s-choice>
-          </s-choice-list>
-        </s-section>
-
-        <s-section heading="Estimate">
-          <s-stack direction="block" gap="base">
-            {estimate === null || data.coverageAt === null ? (
-              <s-stack direction="block" gap="small-300">
-                <s-text color="subdued">
-                  Coverage has not been counted yet, so there is nothing to
-                  estimate from.
-                </s-text>
-                <s-stack direction="inline">
+        <PageColumns
+          aside={
+            <s-section heading="Estimate">
+              <s-stack direction="block" gap="base">
+                {estimate === null || data.coverageAt === null ? (
+                  <s-stack direction="block" gap="small-300">
+                    <s-text color="subdued">
+                      Coverage has not been counted yet, so there is nothing to
+                      estimate from.
+                    </s-text>
+                    <s-stack direction="inline">
+                      <s-button
+                        type="button"
+                        onClick={() =>
+                          fetcher.submit(
+                            { intent: "refresh-coverage" },
+                            { method: "post" },
+                          )
+                        }
+                        {...(busy ? { disabled: true } : {})}
+                      >
+                        Count coverage
+                      </s-button>
+                    </s-stack>
+                  </s-stack>
+                ) : (
+                  <>
+                    <s-grid
+                      gridTemplateColumns="@container (inline-size <= 560px) 1fr 1fr, 'repeat(4, 1fr)'"
+                      gap="base"
+                    >
+                      <Stat
+                        label="Resources"
+                        value={formatCount(estimate.resources)}
+                      />
+                      <Stat
+                        label="Fields"
+                        value={formatCount(estimate.fields)}
+                      />
+                      <Stat
+                        label="Estimated tokens"
+                        value={formatCount(estimate.totalTokens)}
+                      />
+                      <Stat
+                        label="Estimated cost"
+                        value={
+                          estimate.priced
+                            ? formatMicrosUsd(estimate.costMicros)
+                            : "Not priced"
+                        }
+                      />
+                    </s-grid>
+                    {estimate.perLocale.length > 1 ? (
+                      <s-text color="subdued">
+                        {estimate.perLocale
+                          .map(
+                            (row) =>
+                              `${localeLabel(row.locale)}: ${formatCount(row.fields)} fields, ${estimate.priced ? formatMicrosUsd(row.costMicros) : "—"}`,
+                          )
+                          .join(" · ")}
+                      </s-text>
+                    ) : null}
+                    <s-text color="subdued">
+                      {`From coverage counted ${formatDateTime(data.coverageAt)}, with ${data.ai.model}. ${
+                        estimate.priced
+                          ? "Cost is estimated from the model's list price; the provider's own figures are recorded as the sync runs."
+                          : `${data.ai.model} is not in the pricing table, so no cost can be estimated. Tokens are still recorded.`
+                      }`}
+                    </s-text>
+                  </>
+                )}
+                <s-stack direction="inline" gap="small-300">
+                  <s-button
+                    type="button"
+                    variant="primary"
+                    onClick={start}
+                    {...(!canStart ? { disabled: true } : {})}
+                    {...(busy ? { loading: true } : {})}
+                  >
+                    Start translation
+                  </s-button>
                   <s-button
                     type="button"
                     onClick={() =>
@@ -345,78 +319,112 @@ export default function TranslateStore() {
                     }
                     {...(busy ? { disabled: true } : {})}
                   >
-                    Count coverage
+                    Count coverage again
                   </s-button>
                 </s-stack>
               </s-stack>
-            ) : (
-              <>
-                <s-grid
-                  gridTemplateColumns="@container (inline-size <= 560px) 1fr 1fr, 'repeat(4, 1fr)'"
-                  gap="base"
-                >
-                  <Stat
-                    label="Resources"
-                    value={formatCount(estimate.resources)}
-                  />
-                  <Stat label="Fields" value={formatCount(estimate.fields)} />
-                  <Stat
-                    label="Estimated tokens"
-                    value={formatCount(estimate.totalTokens)}
-                  />
-                  <Stat
-                    label="Estimated cost"
-                    value={
-                      estimate.priced
-                        ? formatMicrosUsd(estimate.costMicros)
-                        : "Not priced"
-                    }
-                  />
-                </s-grid>
-                {estimate.perLocale.length > 1 ? (
-                  <s-text color="subdued">
-                    {estimate.perLocale
-                      .map(
-                        (row) =>
-                          `${localeLabel(row.locale)}: ${formatCount(row.fields)} fields, ${estimate.priced ? formatMicrosUsd(row.costMicros) : "—"}`,
-                      )
-                      .join(" · ")}
-                  </s-text>
-                ) : null}
+            </s-section>
+          }
+        >
+          <s-section heading="1. Source">
+            <s-text>
+              {data.primary
+                ? `${localeLabel(data.primary.locale, data.primary.name)} — the store's default language. A resource written in another language, as set in the editor, is translated from that language directly.`
+                : "Shopify reports no default language."}
+            </s-text>
+          </s-section>
+
+          <s-section heading="2. Languages">
+            <s-stack direction="block" gap="small-300">
+              {data.languages.length === 0 ? (
                 <s-text color="subdued">
-                  {`From coverage counted ${formatDateTime(data.coverageAt)}, with ${data.ai.model}. ${
-                    estimate.priced
-                      ? "Cost is estimated from the model's list price; the provider's own figures are recorded as the sync runs."
-                      : `${data.ai.model} is not in the pricing table, so no cost can be estimated. Tokens are still recorded.`
-                  }`}
+                  No other languages yet. Add one first.
                 </s-text>
-              </>
-            )}
-            <s-stack direction="inline" gap="small-300">
-              <s-button
-                type="button"
-                variant="primary"
-                onClick={start}
-                {...(!canStart ? { disabled: true } : {})}
-                {...(busy ? { loading: true } : {})}
-              >
-                Start translation
-              </s-button>
-              <s-button
-                type="button"
-                onClick={() =>
-                  fetcher.submit(
-                    { intent: "refresh-coverage" },
-                    { method: "post" },
-                  )
-                }
-                {...(busy ? { disabled: true } : {})}
-              >
-                Count coverage again
-              </s-button>
+              ) : null}
+              {data.languages.map((language) => (
+                <s-checkbox
+                  key={language.locale}
+                  label={localeLabel(language.locale, language.name)}
+                  details={[
+                    language.published ? "Published" : "Unpublished",
+                    language.aiEnabled
+                      ? "AI on"
+                      : "AI off — its overwrite policy still applies",
+                  ].join(" · ")}
+                  checked={locales.includes(language.locale)}
+                  onChange={(event) =>
+                    setLocales((now) =>
+                      event.currentTarget.checked
+                        ? [...now, language.locale]
+                        : now.filter((l) => l !== language.locale),
+                    )
+                  }
+                  {...(busy ? { disabled: true } : {})}
+                />
+              ))}
             </s-stack>
-          </s-stack>
-        </s-section>
+          </s-section>
+
+          <s-section heading="3. Content">
+            <s-stack direction="block" gap="small-300">
+              {ALL_CONTENT_GROUPS.map((group) => (
+                <s-checkbox
+                  key={group}
+                  label={CONTENT_GROUPS[group].label}
+                  checked={groups.includes(group)}
+                  onChange={(event) =>
+                    setGroups((now) =>
+                      event.currentTarget.checked
+                        ? [...new Set([...now, group])]
+                        : now.filter((g) => g !== group),
+                    )
+                  }
+                  {...(busy ? { disabled: true } : {})}
+                />
+              ))}
+            </s-stack>
+          </s-section>
+
+          <s-section heading="4. Mode">
+            <s-choice-list
+              label="What to translate"
+              labelAccessibilityVisibility="exclusive"
+              name="mode"
+              values={[mode]}
+              onChange={(event) => {
+                const next = event.currentTarget.values[0];
+                if (
+                  next === "missing" ||
+                  next === "missing_outdated" ||
+                  next === "force"
+                )
+                  setMode(next);
+              }}
+              {...(busy ? { disabled: true } : {})}
+            >
+              <s-choice value="missing">
+                {SYNC_MODE_LABEL.missing}
+                <s-text slot="details">
+                  Fields with no translation yet. Nothing existing is touched.
+                </s-text>
+              </s-choice>
+              <s-choice value="missing_outdated">
+                {SYNC_MODE_LABEL.missing_outdated}
+                <s-text slot="details">
+                  Also translations Shopify marks outdated, within each
+                  language&apos;s overwrite policy.
+                </s-text>
+              </s-choice>
+              <s-choice value="force">
+                {SYNC_MODE_LABEL.force}
+                <s-text slot="details">
+                  Every field in scope goes to the AI again. Human translations
+                  are still protected unless a language allows overwriting them.
+                </s-text>
+              </s-choice>
+            </s-choice-list>
+          </s-section>
+        </PageColumns>
       </s-stack>
     </s-page>
   );

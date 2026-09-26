@@ -2,7 +2,10 @@ import type { Job } from "pg-boss";
 
 import { isConfigured } from "~/adapters/ai/openai.server";
 import { prisma } from "~/adapters/db/client.server";
-import { listLanguageSettings } from "~/adapters/db/repositories/translations.server";
+import {
+  listLanguageSettings,
+  wroteResourceSince,
+} from "~/adapters/db/repositories/translations.server";
 import { getLogger } from "~/adapters/observability/logger.server";
 import { webhookJobSchema } from "~/adapters/shopify/compliance-payloads";
 import { listShopLocales } from "~/adapters/shopify/locales";
@@ -11,7 +14,7 @@ import {
   parseProductDelete,
 } from "~/adapters/shopify/product-payload";
 import { unauthenticated } from "~/adapters/shopify/shopify.server";
-import { translateResourceNow } from "~/adapters/translations/inline.server";
+import { collectChangedResource } from "~/adapters/translations/syncs.server";
 import type { SyncMode } from "~/domain/translations/types";
 import { serviceToken } from "~/domain/types";
 
@@ -19,16 +22,27 @@ import { serviceToken } from "~/domain/types";
  * A product was created or changed in Shopify (docs/translations.md
  * § Automatic translation).
  *
- * For every language with automatic translation on, the product's missing
- * fields are translated now — and its outdated ones too, where the language
- * asks for that — as a `resource` sync so it shows on the syncs page and its
- * usage is accounted for like any other. A language's overwrite policy
- * applies unchanged: an edit a person made is never replaced from here.
+ * For every language with automatic translation on, the product goes on
+ * the sync that is collecting changed products — one `resource` sync per
+ * mode, which runs a couple of minutes after it was opened and translates
+ * everything that arrived meanwhile: the product's missing fields, and its
+ * outdated ones where the language asks for that. A language's overwrite
+ * policy applies unchanged: an edit a person made is never replaced from
+ * here.
+ *
+ * Shopify also sends this webhook when *this app* registers a product's
+ * translations. That echo is recognised by the ownership record the engine
+ * wrote moments before and dropped; otherwise a store-wide sync would be
+ * followed by a sync of every product it touched, each finding nothing to do.
  *
  * Deletes are ignored; Shopify removes the translations with the product.
  * Collections, pages and articles have no webhook here and are picked up by
  * the nightly automatic sync instead.
  */
+
+/** A change this soon after the engine wrote the product is the engine's own write. */
+const ECHO_WINDOW_MS = 15 * 60 * 1000;
+
 export async function handleTranslationResourceEvent(
   job: Job<unknown>,
 ): Promise<void> {
@@ -57,6 +71,20 @@ export async function handleTranslationResourceEvent(
   // Shopify with its digests, which the webhook does not carry.
   const { productId } = parseProductDelete(payload);
 
+  if (
+    await wroteResourceSince(
+      principal,
+      productId,
+      new Date(Date.now() - ECHO_WINDOW_MS),
+    )
+  ) {
+    log.debug(
+      { shop: shopDomain, productId },
+      "Product change is this app's own write",
+    );
+    return;
+  }
+
   const { admin } = await unauthenticated.admin(shopDomain);
   const locales = await listShopLocales(admin);
   if (locales.kind === "unavailable") {
@@ -67,7 +95,7 @@ export async function handleTranslationResourceEvent(
   if (!primary) return;
   const enabled = new Set(locales.locales.map((locale) => locale.locale));
 
-  // One pass per mode: a language that wants outdated translations refreshed
+  // One sync per mode: a language that wants outdated translations refreshed
   // and one that does not cannot share a plan.
   const byMode = new Map<SyncMode, string[]>();
   for (const language of automatic) {
@@ -76,32 +104,28 @@ export async function handleTranslationResourceEvent(
     const mode: SyncMode = language.autoUpdateOutdated
       ? "missing_outdated"
       : "missing";
-    byMode.set(mode, [...(byMode.get(mode) ?? []), language.locale]);
+    byMode.set(mode, [...(byMode.get(mode) ?? []), language.locale].sort());
   }
 
   for (const [mode, targetLocales] of byMode) {
-    const result = await translateResourceNow(principal, admin, {
+    const result = await collectChangedResource(principal, {
       resourceId: productId,
       resourceType: "PRODUCT",
-      primaryLocale: primary.locale,
+      sourceLocale: primary.locale,
       targetLocales,
       mode,
-      requestedBy: null,
     });
     log.info(
       {
         shop: shopDomain,
         productId,
         mode,
-        syncId: result.syncId,
-        ...counts(result),
+        syncId: result.sync.id,
+        opened: result.opened,
+        added: result.added,
+        resources: result.sync.resourceIds.length,
       },
-      "Product translated from webhook",
+      "Product change collected for translation",
     );
   }
-}
-
-function counts(result: Awaited<ReturnType<typeof translateResourceNow>>) {
-  const { translated, copied, skipped, failed } = result.outcome;
-  return { translated, copied, skipped, failed };
 }

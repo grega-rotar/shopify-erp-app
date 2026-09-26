@@ -148,6 +148,7 @@ model Shop {
   translationSources     TranslationSourceOverride[]
   translationOwnerships  TranslationOwnership[]
   translationSyncs       TranslationSync[]
+  translationFailures    TranslationFailure[]
   translationSyncItems   TranslationSyncItem[]
   translationProfile     TranslationStoreProfile?
   translationTerms       TranslationTerm[]
@@ -2327,6 +2328,8 @@ model TranslationCoverage {
   resourceType String @map("resource_type")
 
   resources     Int @default(0)
+  /// Fields kept in the source language (`domain/translations` `KEEP_ORIGINAL`).
+  keepOriginal       String[]                   @default([]) @map("keep_original")
   fields        Int @default(0)
   translated    Int @default(0)
   outdated      Int @default(0)
@@ -2431,6 +2434,32 @@ model TranslationOwnership {
 
   @@unique([shopId, resourceId, key, locale])
   @@index([shopId, locale, owner])
+/// The last failed attempt to translate one resource into one language, so
+/// automatic work does not pay the provider for the same failure on every
+/// webhook and every night (docs/translations.md § Failures). Keyed by the
+/// source it failed on: when the source changes the record no longer applies.
+/// Removed when the resource translates.
+model TranslationFailure {
+  id         String    @id @default(cuid())
+  shopId     String    @map("shop_id")
+  resourceId String    @map("resource_id")
+  locale     String
+  /// Hash of the keys and source digests of the fields that were sent.
+  sourceKey  String    @map("source_key")
+  /// Consecutive failures on this source.
+  attempts   Int       @default(1)
+  lastError  String    @map("last_error")
+  failedAt   DateTime  @map("failed_at")
+  /// When automatic work may try again; null means not until the source
+  /// changes or a person asks.
+  retryAfter DateTime? @map("retry_after")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, resourceId, locale])
+  @@map("translation_failure")
+}
+
   @@map("translation_ownership")
 }
 

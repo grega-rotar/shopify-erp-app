@@ -36,6 +36,7 @@ import { handleSyncInventory } from "~/jobs/handlers/sync-inventory";
 import { handleSyncProducts } from "~/jobs/handlers/sync-products";
 import { handleTranslationCoverage } from "~/jobs/handlers/translation-coverage";
 import { handleTranslationProfile } from "~/jobs/handlers/translation-profile";
+import { handleTranslationRemove } from "~/jobs/handlers/translation-remove";
 import { handleTranslationResourceEvent } from "~/jobs/handlers/translation-resource-event";
 import { handleTranslationSync } from "~/jobs/handlers/translation-sync";
 import { withIdempotency } from "~/jobs/with-idempotency";
@@ -212,6 +213,9 @@ async function main(): Promise<void> {
   });
   await boss.work(QUEUES.translationProfile, async (jobs) => {
     for (const job of jobs) await handleTranslationProfile(job);
+  });
+  await boss.work(QUEUES.translationRemove, async (jobs) => {
+    for (const job of jobs) await handleTranslationRemove(job);
   });
   await boss.work(
     QUEUES.translationResourceEvent,

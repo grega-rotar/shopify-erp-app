@@ -14,7 +14,7 @@ import { TranslationsNav } from "~/web/components/translations-nav";
 import { formatDateTime } from "~/web/lib/datetime";
 import { principalFromSession } from "~/web/lib/principal.server";
 import {
-  SYNC_KIND_LABEL,
+  syncName,
   SYNC_STATUS_LABEL,
   TRANSLATION_ROUTES,
 } from "~/web/lib/translations";
@@ -36,6 +36,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sourceLocale: sync.sourceLocale,
       targetLocales: sync.targetLocales,
       resourceTypes: sync.resourceTypes.length,
+      name: syncName({
+        kind: sync.kind,
+        requestedBy: sync.requestedBy,
+        resources: sync.resourceIds.length,
+      }),
       totalResources: sync.totalResources,
       doneResources: sync.doneResources,
       translatedFields: sync.translatedFields,
@@ -64,7 +69,7 @@ export default function Syncs() {
   }, [active, revalidator]);
 
   return (
-    <s-page heading="Syncs">
+    <s-page heading="Syncs" inlineSize="large">
       <s-link slot="breadcrumb-actions" href={TRANSLATION_ROUTES.languages}>
         Translations
       </s-link>
@@ -104,7 +109,7 @@ export default function Syncs() {
                           id={`open-${sync.id}`}
                           href={TRANSLATION_ROUTES.sync(sync.id)}
                         >
-                          {SYNC_KIND_LABEL[sync.kind] ?? sync.kind}
+                          {sync.name}
                         </s-link>
                         <s-text color="subdued">
                           {`${SYNC_MODE_LABEL[sync.mode as SyncMode] ?? sync.mode}${sync.requestedBy ? ` · ${sync.requestedBy}` : ""}`}

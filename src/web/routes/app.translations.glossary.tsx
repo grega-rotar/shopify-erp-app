@@ -405,7 +405,7 @@ export default function Glossary() {
     query.trim() !== "" || kindFilter !== "" || languageFilter !== "";
 
   return (
-    <s-page heading="Terminology overrides">
+    <s-page heading="Terminology overrides" inlineSize="large">
       <s-link slot="breadcrumb-actions" href={TRANSLATION_ROUTES.languages}>
         Translations
       </s-link>

@@ -95,6 +95,8 @@ export interface TranslatableResource {
 
 export interface ResourcePage {
   resources: TranslatableResource[];
+  /** Each resource's own cursor, aligned with `resources`, to page from the middle of a page. */
+  cursors: string[];
   hasNextPage: boolean;
   endCursor: string | null;
 }
@@ -167,10 +169,13 @@ export async function readTranslatableResources(
     query OrchestratorTranslatableResources($type: TranslatableResourceType!, $first: Int!, $after: String) {
       translatableResources(resourceType: $type, first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes {
-          resourceId
-          translatableContent { key value digest locale type }
-          ${translationSelections(input.locales)}
+        edges {
+          cursor
+          node {
+            resourceId
+            translatableContent { key value digest locale type }
+            ${translationSelections(input.locales)}
+          }
         }
       }
     }
@@ -183,7 +188,7 @@ export async function readTranslatableResources(
             hasNextPage: z.boolean(),
             endCursor: z.string().nullable(),
           }),
-          nodes: z.array(nodeSchema),
+          edges: z.array(z.object({ cursor: z.string(), node: nodeSchema })),
         }),
       })
       .nullable()
@@ -198,20 +203,43 @@ export async function readTranslatableResources(
   const parsed = schema.parse(await response.json());
   throwOnErrors(parsed.errors);
   const connection = parsed.data?.translatableResources;
-  if (!connection) return { resources: [], hasNextPage: false, endCursor: null };
+  if (!connection)
+    return { resources: [], cursors: [], hasNextPage: false, endCursor: null };
   return {
-    resources: connection.nodes.map((node) => toResource(node, input.locales)),
+    resources: connection.edges.map((edge) =>
+      toResource(edge.node, input.locales),
+    ),
+    cursors: connection.edges.map((edge) => edge.cursor),
     hasNextPage: connection.pageInfo.hasNextPage,
     endCursor: connection.pageInfo.endCursor,
   };
 }
 
-/** Named resources, in the order asked for; unknown ids are simply absent. */
+/** The most ids `translatableResourcesByIds` accepts in one request. */
+const BY_IDS_CHUNK = 250;
+
+/**
+ * Named resources, in the order asked for; unknown ids are simply absent.
+ * More than Shopify's limit is read in chunks, so a caller may ask about a
+ * whole navigation tree without counting.
+ */
 export async function readTranslatableResourcesByIds(
   admin: AdminApiContext,
   input: { ids: readonly string[]; locales: readonly string[] },
 ): Promise<TranslatableResource[]> {
   if (input.ids.length === 0) return [];
+  if (input.ids.length > BY_IDS_CHUNK) {
+    const chunks: TranslatableResource[][] = [];
+    for (let start = 0; start < input.ids.length; start += BY_IDS_CHUNK) {
+      chunks.push(
+        await readTranslatableResourcesByIds(admin, {
+          ...input,
+          ids: input.ids.slice(start, start + BY_IDS_CHUNK),
+        }),
+      );
+    }
+    return chunks.flat();
+  }
   const query = `#graphql
     query OrchestratorTranslatableResourcesByIds($ids: [ID!]!, $first: Int!) {
       translatableResourcesByIds(resourceIds: $ids, first: $first) {
@@ -233,7 +261,10 @@ export async function readTranslatableResourcesByIds(
     errors: errorsSchema,
   });
   const response = await admin.graphql(query, {
-    variables: { ids: input.ids, first: Math.min(input.ids.length, 250) },
+    variables: {
+      ids: input.ids,
+      first: Math.min(input.ids.length, BY_IDS_CHUNK),
+    },
     tries: 3,
   });
   const parsed = schema.parse(await response.json());
@@ -452,4 +483,135 @@ export function resourceTitle(fields: readonly SourceField[], resourceId: string
     if (text !== "") return text.length > 60 ? `${text.slice(0, 57)}…` : text;
   }
   return resourceId.replace("gid://shopify/", "");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cards                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the editor's list shows beside a title so a row reads the way the
+ * admin's own product index does: the picture, and one line under the
+ * name. Nothing here is stored; a page of cards is read with its page of
+ * resources and forgotten.
+ */
+export interface ResourceCard {
+  imageUrl: string | null;
+  /** "Windsurfing", "12 products", "Blog: News". */
+  subtitle: string | null;
+  /** A product's `DRAFT` or `ARCHIVED`; null for anything live or without a status. */
+  status: "DRAFT" | "ARCHIVED" | null;
+}
+
+const CARDS_QUERY = `#graphql
+  query OrchestratorTranslationCards($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      __typename
+      ... on Product {
+        id status productType
+        featuredMedia { preview { image { url(transform: { maxWidth: 80, maxHeight: 80 }) } } }
+      }
+      ... on Collection {
+        id
+        image { url(transform: { maxWidth: 80, maxHeight: 80 }) }
+        productsCount { count }
+      }
+      ... on Article {
+        id
+        image { url(transform: { maxWidth: 80, maxHeight: 80 }) }
+        blog { title }
+      }
+    }
+  }
+`;
+
+const image = z.object({ url: z.string() }).nullable().optional();
+
+const cardNodeSchema = z.discriminatedUnion("__typename", [
+  z.object({
+    __typename: z.literal("Product"),
+    id: z.string(),
+    status: z.string(),
+    productType: z.string(),
+    featuredMedia: z
+      .object({ preview: z.object({ image }).nullable().optional() })
+      .nullable()
+      .optional(),
+  }),
+  z.object({
+    __typename: z.literal("Collection"),
+    id: z.string(),
+    image,
+    productsCount: z.object({ count: z.number() }).nullable().optional(),
+  }),
+  z.object({
+    __typename: z.literal("Article"),
+    id: z.string(),
+    image,
+    blog: z.object({ title: z.string() }).nullable().optional(),
+  }),
+]);
+
+const cardsSchema = z.object({
+  data: z.object({ nodes: z.array(z.unknown()) }).nullable().optional(),
+  errors: errorsSchema,
+});
+
+/**
+ * The cards for the named resources, in one request per fifty. A node
+ * Shopify cannot return, or of a kind that has no card, is simply absent;
+ * the list shows its title alone rather than not at all.
+ */
+export async function readResourceCards(
+  admin: AdminApiContext,
+  ids: readonly string[],
+): Promise<Map<string, ResourceCard>> {
+  const cards = new Map<string, ResourceCard>();
+  if (ids.length === 0) return cards;
+  for (let start = 0; start < ids.length; start += 50) {
+    const chunk = ids.slice(start, start + 50);
+    const response = await admin.graphql(CARDS_QUERY, {
+      variables: { ids: chunk },
+      tries: 2,
+    });
+    const parsed = cardsSchema.safeParse(await response.json());
+    if (!parsed.success) continue;
+    for (const raw of parsed.data.data?.nodes ?? []) {
+      const node = cardNodeSchema.safeParse(raw);
+      if (!node.success) continue;
+      const value = node.data;
+      switch (value.__typename) {
+        case "Product":
+          cards.set(value.id, {
+            imageUrl: value.featuredMedia?.preview?.image?.url ?? null,
+            subtitle: value.productType || null,
+            status:
+              value.status === "DRAFT" || value.status === "ARCHIVED"
+                ? value.status
+                : null,
+          });
+          break;
+        case "Collection": {
+          const count = value.productsCount?.count;
+          cards.set(value.id, {
+            imageUrl: value.image?.url ?? null,
+            subtitle:
+              count === undefined || count === null
+                ? null
+                : `${count.toLocaleString("en")} ${count === 1 ? "product" : "products"}`,
+            status: null,
+          });
+          break;
+        }
+        case "Article":
+          cards.set(value.id, {
+            imageUrl: value.image?.url ?? null,
+            subtitle: value.blog?.title ? `Blog: ${value.blog.title}` : null,
+            status: null,
+          });
+          break;
+      }
+    }
+  }
+  return cards;
 }

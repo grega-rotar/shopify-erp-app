@@ -26,7 +26,11 @@ export type SkipReason =
   | "up_to_date"
   | "protected_existing"
   | "protected_manual"
-  | "same_language";
+  | "same_language"
+  /** Failed before on the same source; automatic work waits before paying again. */
+  | "failed_before"
+  /** The merchant keeps this field in the source language. */
+  | "kept_original";
 
 export type FieldDecision =
   | { kind: "translate"; field: SourceField; state: FieldState }
@@ -43,6 +47,8 @@ export interface PlanInput {
   policy: OverwritePolicy;
   sourceLocale: string;
   targetLocale: string;
+  /** Keys the merchant keeps in the source language for this target. */
+  keep?: ReadonlySet<string>;
 }
 
 /** Content types Shopify marks translatable but that hold no prose. */
@@ -150,6 +156,8 @@ export function planResource(input: PlanInput): FieldDecision[] {
       return { kind: "skip", field, reason: "not_translatable", state };
     if (NEVER_AUTO_TRANSLATED_KEYS.has(field.key))
       return { kind: "skip", field, reason: "identifier", state };
+    if (input.keep?.has(field.key))
+      return { kind: "skip", field, reason: "kept_original", state };
 
     // The resource is written in the target language: its own text is the
     // translation, and no AI is involved. Only fills a gap or refreshes an
@@ -209,4 +217,6 @@ export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   protected_existing: "existing translation protected",
   protected_manual: "edited by a person, protected",
   same_language: "written in this language",
+  failed_before: "failed before, retried later",
+  kept_original: "kept in the original language",
 };

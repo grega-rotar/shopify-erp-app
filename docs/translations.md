@@ -43,7 +43,7 @@ web (React Router)                                    worker (pg-boss)
   editor save  ──translationsRegister──▶ Shopify
   Translate store / language actions ──startSync──▶ translation-sync ──▶ engine ──▶ OpenAI
                                                                         └──▶ translationsRegister
-  webhooks/products/{create,update} ──▶ translation-resource-event (one product, inline)
+  webhooks/products/{create,update} ──▶ translation-resource-event ──▶ one collecting `resource` sync ──▶ translation-sync
   nightly tick ──▶ automatic sync per language; translation-coverage per shop
 ```
 
@@ -92,7 +92,8 @@ All tables are shop-scoped and cascade from `shop`.
 
 - `translation_language` — the engine's settings for one locale: `ai_enabled`,
   `auto_translate_new`, `auto_update_outdated`, `content_scope` (content
-  groups), `overwrite_policy`, and `last_sync_at` / `last_successful_sync_at`.
+  groups), `overwrite_policy`, `keep_original` (fields kept in the source
+  language, § Kept in the original language), and `last_sync_at` / `last_successful_sync_at`.
   A locale with no row has the defaults. Removing the locale in Shopify
   deletes the row; nothing else is deleted.
 - `translation_coverage` — derived counts per (locale, resource type):
@@ -113,6 +114,10 @@ All tables are shop-scoped and cascade from `shop`.
 - `translation_ownership` — per (resource, key, locale): `owner` (`ai` or
   `manual`), `value_hash` (SHA-256 of the value as written, base64url),
   `source_digest`, `sync_id`, `written_by`, `written_at`.
+- `translation_failure` — per (resource, locale): the last failure's
+  `source_key` (hash of the keys and source digests sent), consecutive
+  `attempts`, `last_error`, `failed_at`, `retry_after` (null: not until the
+  source changes). § Failures.
 - `translation_sync` — kind (`translate_store`, `language`, `automatic`,
   `resource`), mode (`missing`, `missing_outdated`, `force`), status, source
   and target locales, resource types (and ids for a resource sync), the
@@ -174,6 +179,19 @@ Saving in the editor records the field as `manual`. Emptying a field is
 the AI (a translated handle changes the URL of every localised page) but can
 be edited by hand. Fields whose Shopify content type is not prose (URIs, JSON,
 numbers, dates, references) are never translated.
+
+### Kept in the original language
+
+A language may keep some fields in the source language
+(`TranslationLanguage.keepOriginal`, `KEEP_ORIGINAL` in
+`domain/translations/types`): product names, product types, product option
+names and values, collection names. The planner skips them with the reason
+`kept_original` in every mode, `force` included, and whoever asks — a sync, a
+webhook or the editor's "translate this". Shoppers see the original.
+Translations already there are left alone (delete them in the editor, or
+all of a language's with **Delete all translations**), and coverage does not
+count a kept field, so the language does not look forever incomplete. Set on
+the language page under AI translation.
 
 ## Source language
 
@@ -458,13 +476,44 @@ retry — priced under `PRICING_VERSION` at the time. A network failure is a
 row with zero tokens, so the ledger shows the request was made. Skipped
 translations never reach the provider and never appear.
 
+## AI usage
+
 The AI usage page reads that ledger for one period at a time, measured in
-UTC: totals (`usageTotals`), a trend (`usageTrend`, SQL `date_trunc` by day
-for a month and by month for all time, gaps filled in `web/lib/usage`) and
-the four breakdowns (`usageBreakdown`), each row with its share of the
-period's estimated cost (`domain/translations/usage`). A breakdown by sync
-names the sync as its page does and links to it; a request outside any sync
-is language detection.
+UTC (the clock every row was stamped in). The period is a half-open span
+(`web/lib/usage`: today, last 7 or 30 days, this month, the previous month,
+all time, or a custom span of two inclusive dates), carried in the address
+as `?period=…&from=…&to=…`; the default is the last thirty days. Every read
+takes a `UsageScope` — the span, or one sync, or the rows outside any sync —
+so the page and the per-sync dialog are the same sums over different rows:
+
+- `usageTotals`: requests, failed requests, input / cached / output / total
+  tokens, estimated cost, unpriced requests and distinct resources, one SQL
+  aggregate.
+- `usageTrend`: the same sums per hour, day or month (`date_trunc`), the
+  bucket chosen from the span's length (`trendBucketFor`), gaps filled in
+  `web/lib/usage` so an idle day is an empty slot rather than a missing bar.
+- `usageBreakdown`: grouped by target locale, content type or model.
+- `usageBySync`: grouped by the request's own `sync_id` and left-joined to
+  the sync, sorted, filtered by language or mode, and paged in one query
+  (the group count comes back as a window function). A request outside any
+  sync — language detection — is one row of its own; a deleted sync's
+  requests are still counted.
+- `usageRequests`: the rows one by one, newest first, for the dialog.
+
+Each breakdown row carries its share of the period's estimated cost, or of
+its tokens when nothing in the period is priced (`sharePercent`); the page
+says which. The sync ledger is sorted and paged by the server through the
+address (`sort`, `dir`, `page`, `locale`, `mode`), the way the orders index
+is; a row opens a dialog that reads the sync's own totals, breakdowns and
+last fifty requests from the same loader (`?part=sync&sync=<id>`, or
+`sync=none` for the rows outside any sync). Cost is written to two places
+everywhere except in the dialog's request list, where the exact sub-cent
+figure is shown (`web/lib/usage-format`).
+
+The chart is inline SVG (`web/components/usage-chart`), drawn at the card's
+measured width and a fixed height, switchable between cost, tokens — stacked
+as input, cached input and output — and requests, with the bucket's figures
+in a tooltip that the pointer or the arrow keys move.
 
 ## Coverage and estimates
 
@@ -472,6 +521,15 @@ is language detection.
 type once, counting per (locale, type) with the same field test the planner
 uses, and replaces the cache. It runs after a sync completes, on request from
 the Languages and Translate store pages (throttled), and nightly.
+
+A type Shopify will not read costs that type, not the count: the others are
+counted and written, then the job fails naming what was not read; when
+nothing at all could be read the old counts stay. The Languages page asks
+pg-boss what became of the shop's last count (`coverageCountState` →
+`latestJobForKey`): while one is waiting or running the page says so and
+polls; when the last one failed after the cache was written, the page shows
+the reason. A button whose work runs on the worker must be able to say what
+happened to it, or a failed count looks like a button that does nothing.
 
 "Translate store" estimates from that cache in the browser as the choices
 change: fields and source characters for the mode → tokens at about 3.5
@@ -487,8 +545,9 @@ tokens are still recorded.
 | ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `translation-sync`           | `startSync` from a page or the nightly tick; itself, per page  | One page (10 resources) of the current type through the engine, records items, advances cursor, re-enqueues; checks for cancel between pages; completes, marks the languages' last successful sync, asks for coverage |
 | `translation-coverage`       | After a sync; page buttons; nightly per shop                   | The store-wide count, replaced whole                                                                    |
-| `translation-resource-event` | `products/create`, `products/update` webhooks                  | The product, inline, for every language with automatic translation on (one `resource` sync per mode)   |
+| `translation-resource-event` | `products/create`, `products/update` webhooks                  | Puts the product on the collecting `resource` sync for every language with automatic translation on (one per mode); drops the echo of this app's own write |
 | `translation-profile`        | Store context page: Build now / Read the store again           | `ensureStoreProfile` with `force`: re-reads the snapshot, rebuilds the profile, rediscovers the terms   |
+| `translation-remove`         | Language page: Delete all translations; itself, per page       | One page (50 resources) of the current type: `translationsRemove` for every key translated in the language, forgets ownership and remembered failures; re-enqueues with its cursor in the job data; asks for coverage at the end |
 
 `translation-sync` and the others run under `policy: "short"` so the singleton
 key per sync holds; the cursor moves only over recorded work, so a retried
@@ -502,33 +561,149 @@ content scope of every language with automatic translation on — which is what
 reaches collections, pages, articles, navigation and metafields, none of which
 have a webhook here.
 
+### Automatic translation
+
+Shopify sends `products/update` once per product, and a CSV import, a bulk
+edit, a stock sync or a sale campaign sends hundreds in a minute. One sync
+per webhook was a syncs page nobody could read, so changed products are
+**collected** (`collectChangedResource`): the event handler appends the
+product to the queued `resource` sync with the same languages and mode
+(`appendToCollectingSync`, no person behind it) or opens one, whose job is
+sent once, `COLLECT_WINDOW_SECONDS` (two minutes) after opening, under the
+sync's singleton key. `beginSyncPass` claims the sync before it reads it,
+so the pass sees every product that arrived; a sync that has started takes
+no more, and the next change opens the next one. A `resource` sync pages
+through its list ten at a time, the cursor's `after` being the offset.
+
+Two things keep the list honest. The webhook Shopify sends when *this app*
+registers a product's translations is the echo of that write: a product the
+engine wrote in the last fifteen minutes (`wroteResourceSince`, from the
+ownership record) is dropped, or every store-wide sync would be followed by
+a sync of everything it touched. And a collected sync that finds nothing to
+translate — the change was a price or a stock level — is deleted at
+completion rather than recorded (`translation_sync.nothing_to_do` in the
+event log), since it made no provider request and says nothing a person
+needs. The syncs, language and usage pages name a collected sync by its
+size ("12 changed products", `syncName`); "One resource" is the editor's.
+
+### Failures
+
+A resource that fails in a language — the reply left a field out, was cut
+short, broke an invariant twice, or Shopify refused the write — used to be
+sent again by every automatic pass. With `products/update` arriving on
+every stock sync, that was the same failed product paid for many times a
+day, often twice (translation and correction) and up to three times per
+request on timeouts. So the failure is remembered (`translation_failure`,
+one row per resource and language) with a hash of the keys and source
+digests that were sent. Automatic work — the nightly sync and collected
+webhook syncs, i.e. `requestedBy` is null — skips a resource whose remembered
+failure matches the current source, with the reason `failed_before`, for 1,
+then 3, then 7 days after consecutive failures, and after the fourth not at
+all until the source changes. A sync a person started and the editor always
+try. A success, and **Delete all translations**, forget the failure.
+
+### Delete all translations
+
+The language page's Translate card deletes every translation in the
+language from Shopify, AI and human alike, through `translation-remove`.
+The language stays. Automatic translation for the language is switched off
+in the same action, or the nightly sync would fill it again; it is refused
+while a sync for the language is running, and the page shows the job's
+state while it works. Removing the language itself (In Shopify card) is
+the other way to lose every translation, and takes the language with it.
+
 ## Screens
 
 ```text
 Translations        /app/translations                       Languages: Shopify state, AI state, coverage, needs work, last sync
   Add language      /app/translations/add                   one card: language picker · Shopify visibility · AI translation · existing content; a sidebar with the summary, the scope estimate and the one button
   Language          /app/translations/languages/:locale     In Shopify (publish / unpublish, markets, remove) · AI translation · Coverage · Translate · Recent syncs
-  Editor            /app/translations/editor                workspace: a rail of resources beside the one open; each field's source beside its translation; source language; translate now
+  Editor            /app/translations/editor                index: kind tabs (All, each group; Navigation is a tree of menus and their items) · language · search · status, then resources — picture, name, one line under it, what needs a person; a row opens the resource in a dialog: each field's source beside its translation, source language, translate now, save
   Translate store   /app/translations/translate             source · languages · content · mode · estimate · start
   Syncs             /app/translations/syncs, /:syncId       list; one sync with result, usage, every item and its reason and trace; stop
-  Store context     /app/translations/context               what the AI knows about the store; two switches; the learnt terms; established translations per language; forget; read the store again
+  Store context     /app/translations/context               four tabs (`?tab=`): Overview — counts, the two switches, a line of the profile; Terminology — learnt terms and established translations per language, 20 a page, a row opens its detail, tick rows to forget several; Product knowledge — the profile's brands, families, abbreviations, meanings and vocabulary as one filtered table; AI instructions — what the AI is told in full, the switches explained; read the store again
   Overrides         /app/translations/glossary              Terminology overrides (the glossary): one table of rules, searchable, filtered by rule and language; add / edit in a dialog, prefilled when opened from Store context; remove behind a confirmation
-  AI usage          /app/translations/usage                 one period (today / this month, the default / last 30 days / all time): cost, tokens, requests, resources; cost by day or month; by language, content, model, sync
+  AI usage          /app/translations/usage                 one period (last 30 days by default; today, 7 days, this or the previous month, all time, custom): five figures; cost, tokens or requests over time; by content type, language, model; the sync ledger, sorted, filtered and paged, each sync opening its own usage in a dialog
 ```
 
-The editor is one screen, not a list and a page. The rail on the left —
-language, content, status, search, then a page of resources — stays put
-while the resource on the right is edited, and choosing another resource
-swaps the right side without leaving the page: the route loader reads the
-rail, and the pane fetches its resource from the same loader with
-`part=resource`; `shouldRevalidate` keeps a change of resource from
-re-reading the rail, while every save and translation revalidates both. The
-address carries the open resource so a reload or a bookmark returns to it.
-Below about 760px of width the two take turns, the rail until something is
-chosen and the pane with a way back after. The pane's columns are capped so
-prose is never stretched across a wide window; a longer window is for the
-rail beside them. Unsaved edits hold a change of resource behind the save
-bar's own leave confirmation.
+Every page is `s-page inlineSize="large"`. The editor's index reads each
+page's cards (`readResourceCards`: a product's picture, type and draft or
+archived status; a collection's picture and product count; an article's
+picture and blog) in one `nodes` request beside the resources themselves,
+so a row looks the way the admin's own product index does.
+
+The editor is an index with a dialog over it, not a list and a page. The
+index is the page: a row of tabs for the kinds of content — All, then each
+content group, a group with several kinds naming the kind in the bar — then
+the language, the search across the width and the status filter in the bar
+above the columns, then a page of resources as the admin's own product
+index draws them — picture, name, one line under it, what the translation
+needs, who wrote its fields. Shopify offers no query on
+`translatableResources`, so a status filter is applied here: with one on,
+the loader reads forward a hundred at a time until it has a page of matches
+or has read six hundred, and pages on from the last match (each resource's
+own cursor) so nothing between is skipped; the footer says how many were
+read. "All" is an overview — up to eight of every kind, searched across the
+kinds that can be searched, no paging — and a kind is chosen to page
+through it. **Navigation is a tree**, not two flat lists: every menu with
+its items nested under it, read whole (`adapters/shopify/navigation`,
+`readNavigationTree`), each branch opening and closing, and a search or a
+state filter keeping the menus above a match so a match is never shown
+without saying which menu it is in. A menu's title is a `MENU` resource named by
+the menu's own id, so those are read by id. An item's is a `LINK` one, and
+how that id relates to the `MenuItem` id the navigation query returns is
+not in Shopify's reference (`Menu` and `Link` have `translations`;
+`MenuItem` has none). Asking about a `MenuItem` id is not answered with
+silence but with a GraphQL error — which is what turned this tab into an
+Application Error the first time — so nothing is asked for by a guessed id:
+the `LINK` resources are **listed** with the same documented query the sync
+job uses and matched to the tree by the number in their ids. An item
+nothing matches is listed as having nothing to translate rather than
+pointed at a resource that may not be its own. Every read here fails soft
+and logs: a tree whose translations could not be read is still a tree worth
+seeing, and one tab must never take the page down. The queries are checked
+against the schema (`read_online_store_navigation`, `read_translations`). Choosing a row opens
+the resource in a dialog with every field's source beside its translation,
+the AI's buttons, the previous and next resource, and Save in the footer;
+the route loader reads the index, and the dialog fetches its resource from
+the same loader with `part=resource`; `shouldRevalidate` keeps a change of
+resource from re-reading the index, while every save and translation
+revalidates both. The address carries the open resource so a reload or a
+bookmark returns to it; closing the dialog takes it out of the address but
+keeps what was typed for that resource while the page lives. Unsaved edits
+close the way to the previous or next resource and to the AI until they are
+saved or discarded, so nothing is walked away from by accident. A field's
+source box is as tall as its text and never stretched to the field beside
+it.
+
+**A field that holds HTML is edited as prose.** A description is rendered
+on both sides — the source read rather than decoded, the translation in a
+`contenteditable` with a small toolbar (undo and redo, then bold, italic,
+heading, paragraph, the two lists, a link row, clear formatting) — and an **HTML** view shows
+the source itself for anyone who wants the tags. A field with an embed or a
+table in it opens as HTML and stays there, because rich text editing
+rewrites what it is given and an `<iframe>` does not survive that; the
+switch says so. The editor is built from `contenteditable` and Polaris
+buttons rather than a rich text framework, which would be a second design
+system and a large dependency for bold and a list (docs/BUILD_SPEC.md
+section 2.6); `document.execCommand` is what the platform offers without
+one — including undo and redo, which go through the field's own history, so
+the buttons and the keyboard's own shortcuts step back through typing and
+toolbar commands alike. What the browser writes is normalised back into the
+document's own vocabulary (`<b>` → `<strong>`), and the field is compared
+to the *normalised* markup before it is ever rewritten: rewriting it would
+clear the browser's undo history, which is the history those buttons use. A field's two columns are built the same way — one header line and one
+box, the toolbar inside the box rather than above it — so the source and
+its translation start on the same line and end on the same line; the strip
+over the source carries a copy of it into the translation, which Discard
+takes back like any other edit. A long field can take the dialog to itself
+(**Open the full editor**) and give it back, so a description is edited at
+the height of the screen rather than a fifth of it. Nothing is rendered or
+pasted unsanitised:
+`web/lib/html` is an allowlist of tags and attributes with no dependency
+and no DOM, so a description that once had a script or a handler in it
+cannot run inside the admin, and a paste from a word processor brings its
+words rather than its markup.
 
 ### Languages
 
@@ -561,6 +736,17 @@ run; with nothing counted it says so rather than guessing. The one button is
 in the sidebar with the reason it is closed; success is the language's page
 with a toast (`?added=1`).
 
+A language's page is a form and a sidebar (`PageColumns`). The main column
+holds what changes the language: AI translation (switches, then what gets
+translated and what stays in the original language as checkbox grids of up
+to three columns, the overwrite policy, the glossary), the translate
+actions, recent syncs, and finally markets with the two destructive rows —
+delete all translations, remove language. The sticky sidebar states where
+the language stands: its label, published or not with the one button that
+changes it, and coverage as one stacked bar (translated, outdated, missing)
+with a bar per content group linking to the editor. Two equal cards side by
+side left half the page empty beside the tall settings card.
+
 Every Shopify mutation shows what Shopify answered, not what was asked.
 Removing a language explains that Shopify deletes its translations, and
 Shopify decides whether the removal is allowed. Retranslate everything and
@@ -578,7 +764,8 @@ next open. Until then the pages say the app has not been granted permission.
 ## Known limits
 
 - Only products have a webhook; other content is translated automatically
-  nightly.
+  nightly. A product edited within fifteen minutes of the engine writing it
+  is taken for the engine's own echo and waits for the nightly sync too.
 - Product options and option values do not point back at their product in
   the Admin API, so they are translated with their own values and the
   store's terminology, not their product's title.

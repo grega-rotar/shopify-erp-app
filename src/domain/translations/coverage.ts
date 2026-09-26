@@ -33,10 +33,17 @@ export function accumulateResource(
     fields: readonly SourceField[];
     translations: ReadonlyMap<string, readonly ExistingTranslation[]>;
     locales: readonly string[];
+    /** Keys a locale keeps in the source language; not counted for it. */
+    keep?: (locale: string) => ReadonlySet<string>;
   },
 ): void {
-  const eligible = input.fields.filter(isTranslatableField);
+  const translatable = input.fields.filter(isTranslatableField);
   for (const locale of input.locales) {
+    const kept = input.keep?.(locale);
+    const eligible =
+      kept && kept.size > 0
+        ? translatable.filter((field) => !kept.has(field.key))
+        : translatable;
     const key = keyOf(locale, input.resourceType);
     const row = acc.get(key) ?? {
       locale,

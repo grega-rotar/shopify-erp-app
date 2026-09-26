@@ -2,11 +2,16 @@ import type { Prisma } from "@prisma/client";
 
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
+  appendToCollectingSync,
   createSync,
   recordLanguageSync,
   type Sync,
 } from "~/adapters/db/repositories/translations.server";
-import { enqueue, enqueueThrottled } from "~/adapters/queue/boss.server";
+import {
+  enqueue,
+  enqueueThrottled,
+  latestJobForKey,
+} from "~/adapters/queue/boss.server";
 import {
   QUEUES,
   translationCoverageKey,
@@ -59,6 +64,70 @@ export async function startSync(
   return sync;
 }
 
+/**
+ * How long changed resources are collected before one sync translates them
+ * together (docs/translations.md § Automatic translation). Shopify sends one
+ * webhook per product, and a CSV import or a bulk edit sends hundreds in a
+ * minute; one sync per webhook would be a syncs page nobody can read.
+ */
+export const COLLECT_WINDOW_SECONDS = 120;
+
+/**
+ * Puts a resource Shopify says has changed on the sync that is collecting
+ * changes for these languages and mode, opening one when there is none.
+ * The sync runs `COLLECT_WINDOW_SECONDS` after it was opened; the job is
+ * sent once per sync (its singleton key), so every later call in the window
+ * only lengthens the list. A sync that has started is not added to — the
+ * next change opens the next one.
+ */
+export async function collectChangedResource(
+  principal: Principal,
+  input: {
+    resourceId: string;
+    resourceType: ResourceType;
+    sourceLocale: string;
+    targetLocales: string[];
+    mode: SyncMode;
+  },
+): Promise<{ sync: Sync; opened: boolean; added: boolean }> {
+  const appended = await appendToCollectingSync(principal, input);
+  if (appended) return { ...appended, opened: false };
+
+  const sync = await createSync(principal, {
+    kind: "resource",
+    mode: input.mode,
+    sourceLocale: input.sourceLocale,
+    targetLocales: input.targetLocales,
+    resourceTypes: [input.resourceType],
+    resourceIds: [input.resourceId],
+    requestedBy: null,
+  });
+  await recordLanguageSync(principal, input.targetLocales, "started", new Date());
+  await enqueue(
+    QUEUES.translationSync,
+    { shopDomain: principal.shopDomain, syncId: sync.id },
+    {
+      singletonKey: translationSyncKey(sync.id),
+      startAfterSeconds: COLLECT_WINDOW_SECONDS,
+    },
+  );
+  await appendEvent(principal, {
+    entityType: "translation_sync",
+    entityId: sync.id,
+    event: "translation_sync.started",
+    detail: {
+      kind: "resource",
+      mode: input.mode,
+      targetLocales: input.targetLocales,
+      resourceTypes: [input.resourceType],
+      resources: 1,
+      by: null,
+      collecting: COLLECT_WINDOW_SECONDS,
+    },
+  });
+  return { sync, opened: true, added: true };
+}
+
 /** Asks for the coverage cache to be re-read; null when one is already pending. */
 export async function requestCoverageRefresh(
   principal: Principal,
@@ -70,6 +139,36 @@ export async function requestCoverageRefresh(
     translationCoverageKey(principal.shopDomain),
     windowSeconds,
   );
+}
+
+/**
+ * What became of the last coverage count (docs/translations.md § Coverage):
+ * one is waiting or running, or the last one failed and the cache is older
+ * than that failure. The Languages page shows both; without them a count
+ * that failed on the worker looks like a button that does nothing.
+ */
+export interface CoverageCountState {
+  counting: boolean;
+  failed: { at: Date; reason: string } | null;
+}
+
+export async function coverageCountState(
+  principal: Principal,
+  countedAt: Date | null,
+): Promise<CoverageCountState> {
+  const job = await latestJobForKey(
+    QUEUES.translationCoverage,
+    translationCoverageKey(principal.shopDomain),
+  );
+  if (!job) return { counting: false, failed: null };
+  const counting =
+    job.state === "created" || job.state === "retry" || job.state === "active";
+  const failedAt = job.completedOn ?? job.createdOn;
+  const failed =
+    job.state === "failed" && (!countedAt || failedAt > countedAt)
+      ? { at: failedAt, reason: job.error ?? "The job failed without a reason." }
+      : null;
+  return { counting, failed };
 }
 
 /**

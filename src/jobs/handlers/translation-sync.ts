@@ -7,6 +7,7 @@ import { raiseException } from "~/adapters/db/repositories/exception.server";
 import {
   advanceSync,
   beginSyncPass,
+  deleteSync,
   finishSync,
   getSync,
   isCancelRequested,
@@ -142,16 +143,22 @@ export async function handleTranslationSync(job: Job<unknown>): Promise<void> {
     intelligence,
   };
 
-  // A resource sync names its resources and has one page; a store or
-  // language sync walks the type's connection.
+  // A resource sync names its resources and pages through the list, its
+  // cursor the offset of the next one; a store or language sync walks the
+  // type's connection.
   let resources: TranslatableResource[];
   let nextCursor: { typeIndex: number; after: string | null };
   if (sync.resourceIds.length > 0) {
+    const ids = [...new Set(sync.resourceIds)];
+    const offset = Number(sync.cursor.after ?? 0) || 0;
     resources = await readTranslatableResourcesByIds(admin, {
-      ids: sync.resourceIds,
+      ids: ids.slice(offset, offset + PAGE),
       locales: targetLocales,
     });
-    nextCursor = { typeIndex: types.length, after: null };
+    nextCursor =
+      offset + PAGE < ids.length
+        ? { typeIndex: sync.cursor.typeIndex, after: String(offset + PAGE) }
+        : { typeIndex: types.length, after: null };
   } else {
     const page = await readTranslatableResources(admin, {
       type,
@@ -229,6 +236,29 @@ async function complete(
   targetLocales: readonly string[],
 ): Promise<void> {
   const now = new Date();
+
+  // A sync collected from webhooks that found every product already
+  // translated is not worth a row: the change was a price, a stock level or
+  // this app's own write. It is removed rather than completed, and nothing
+  // downstream — coverage, exceptions — is asked to move for it.
+  const collected = sync.kind === "resource" && sync.requestedBy === null;
+  if (collected) {
+    const fresh = await getSync(principal, sync.id);
+    if (
+      fresh &&
+      fresh.translatedFields + fresh.copiedFields + fresh.failedFields === 0
+    ) {
+      await deleteSync(sync.id);
+      await appendEvent(principal, {
+        entityType: "translation_sync",
+        entityId: sync.id,
+        event: "translation_sync.nothing_to_do",
+        detail: { resources: fresh.doneResources },
+      });
+      return;
+    }
+  }
+
   await finishSync(sync.id, "completed", now);
   await recordLanguageSync(principal, targetLocales, "succeeded", now);
   await appendEvent(principal, {

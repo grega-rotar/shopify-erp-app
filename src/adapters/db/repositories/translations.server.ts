@@ -17,6 +17,7 @@ import type { CoverageRow } from "~/domain/translations/estimate";
 import {
   defaultLanguageSettings,
   isContentGroup,
+  isKeepOriginal,
   type GlossaryTerm,
   type LanguageSettings,
   type OwnershipRecord,
@@ -55,6 +56,7 @@ function toSettings(row: TranslationLanguage): LanguageSettings {
     autoUpdateOutdated: row.autoUpdateOutdated,
     contentScope: row.contentScope.filter(isContentGroup),
     overwritePolicy: row.overwritePolicy,
+    keepOriginal: row.keepOriginal.filter(isKeepOriginal),
   };
 }
 
@@ -108,6 +110,7 @@ export async function saveLanguageSettings(
     autoUpdateOutdated: settings.autoUpdateOutdated,
     contentScope: [...settings.contentScope],
     overwritePolicy: settings.overwritePolicy,
+    keepOriginal: [...settings.keepOriginal],
   };
   await prisma.translationLanguage.upsert({
     where: { shopId_locale: { shopId, locale: settings.locale } },
@@ -486,6 +489,26 @@ export async function recordOwnership(
   );
 }
 
+/**
+ * Whether this app wrote a translation of the resource since `since`. A
+ * products/update webhook that arrives right after the engine registered a
+ * product's translations is the echo of that write, not a merchant's edit.
+ */
+export async function wroteResourceSince(
+  principal: Principal,
+  resourceId: string,
+  since: Date,
+): Promise<boolean> {
+  const count = await prisma.translationOwnership.count({
+    where: {
+      shop: { domain: shopDomainOf(principal) },
+      resourceId,
+      writtenAt: { gte: since },
+    },
+  });
+  return count > 0;
+}
+
 /** A translation removed in Shopify has no owner any more. */
 export async function forgetOwnership(
   principal: Principal,
@@ -536,10 +559,61 @@ export async function createSync(
       targetLocales: input.targetLocales,
       resourceTypes: input.resourceTypes,
       resourceIds: input.resourceIds ?? [],
+      // A sync that names its resources knows its size; one that walks the
+      // store learns it as it goes.
+      totalResources: input.resourceIds?.length ?? 0,
       estimate: input.estimate ?? Prisma.DbNull,
       requestedBy: input.requestedBy,
     },
   });
+}
+
+/**
+ * Adds a resource to the sync that is still collecting changed resources
+ * for the same languages and mode — queued, from Shopify rather than a
+ * person — and returns it; null when there is no such sync, or it started
+ * between the read and the write, so the caller opens a new one. A resource
+ * already on the list is not added twice.
+ */
+export async function appendToCollectingSync(
+  principal: Principal,
+  input: {
+    resourceId: string;
+    resourceType: string;
+    mode: TranslationSyncMode;
+    targetLocales: readonly string[];
+  },
+): Promise<{ sync: Sync; added: boolean } | null> {
+  const sync = await prisma.translationSync.findFirst({
+    where: {
+      shop: { domain: shopDomainOf(principal) },
+      kind: "resource",
+      status: "queued",
+      requestedBy: null,
+      mode: input.mode,
+      targetLocales: { equals: [...input.targetLocales] },
+      resourceTypes: { equals: [input.resourceType] },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!sync) return null;
+  if (sync.resourceIds.includes(input.resourceId)) return { sync, added: false };
+  const updated = await prisma.translationSync.updateMany({
+    where: { id: sync.id, status: "queued" },
+    data: {
+      resourceIds: { push: input.resourceId },
+      totalResources: { increment: 1 },
+    },
+  });
+  if (updated.count === 0) return null;
+  return {
+    sync: {
+      ...sync,
+      resourceIds: [...sync.resourceIds, input.resourceId],
+      totalResources: sync.totalResources + 1,
+    },
+    added: true,
+  };
 }
 
 export async function getSync(
@@ -589,17 +663,16 @@ export async function beginSyncPass(
   id: string,
   now: Date,
 ): Promise<ClaimedSync | null> {
+  // Claim first, read second: a sync that was collecting resources while
+  // queued (`appendToCollectingSync`) stops taking them the moment it is
+  // running, and the read after the claim sees the whole list.
+  await prisma.translationSync.updateMany({
+    where: { id, shop: { domain: shopDomainOf(principal) }, status: "queued" },
+    data: { status: "running", startedAt: now },
+  });
   const sync = await getSync(principal, id);
-  if (!sync) return null;
-  if (sync.status === "queued") {
-    await prisma.translationSync.update({
-      where: { id },
-      data: { status: "running", startedAt: now },
-    });
-  } else if (sync.status !== "running") {
-    return null;
-  }
-  return { ...sync, status: "running", cursor: parseCursor(sync.cursor) };
+  if (!sync || sync.status !== "running") return null;
+  return { ...sync, cursor: parseCursor(sync.cursor) };
 }
 
 function parseCursor(value: Prisma.JsonValue | null): SyncCursor {
@@ -670,6 +743,16 @@ export async function finishSync(
     where: { id },
     data: { status, finishedAt: now, lastError },
   });
+}
+
+/**
+ * Removes a sync and its items. Only for a sync collected from Shopify's
+ * webhooks that found nothing to do: a row saying "12 products, nothing
+ * translated" every few minutes is what makes a syncs page unreadable, and
+ * such a sync made no provider request, so no usage points at it.
+ */
+export async function deleteSync(id: string): Promise<void> {
+  await prisma.translationSync.delete({ where: { id } });
 }
 
 export async function requestSyncCancel(
@@ -828,8 +911,48 @@ export async function recordUsage(
   });
 }
 
+
+/**
+ * What a usage read covers: a span of time, a sync, or both. `from` is
+ * inclusive and `to` exclusive; null is unbounded. `syncId` null reads
+ * every row, and the explicit `outsideSync` reads the rows no sync owns
+ * (language detection).
+ */
+export interface UsageScope {
+  from?: Date | null;
+  to?: Date | null;
+  syncId?: string | null;
+  outsideSync?: boolean;
+}
+
+function usageWhere(shopId: string, scope: UsageScope): Prisma.AiUsageWhereInput {
+  return {
+    shopId,
+    ...(scope.from || scope.to
+      ? {
+          createdAt: {
+            ...(scope.from ? { gte: scope.from } : {}),
+            ...(scope.to ? { lt: scope.to } : {}),
+          },
+        }
+      : {}),
+    ...(scope.syncId ? { syncId: scope.syncId } : {}),
+    ...(scope.outsideSync ? { syncId: null } : {}),
+  };
+}
+
+function usageSql(shopId: string, scope: UsageScope): Prisma.Sql {
+  return Prisma.sql`u."shop_id" = ${shopId}
+    ${scope.from ? Prisma.sql`AND u."created_at" >= ${scope.from}` : Prisma.empty}
+    ${scope.to ? Prisma.sql`AND u."created_at" < ${scope.to}` : Prisma.empty}
+    ${scope.syncId ? Prisma.sql`AND u."sync_id" = ${scope.syncId}` : Prisma.empty}
+    ${scope.outsideSync ? Prisma.sql`AND u."sync_id" IS NULL` : Prisma.empty}`;
+}
+
 export interface UsageTotals {
   requests: number;
+  /** Requests the provider refused or that failed to parse; their tokens count. */
+  failed: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -843,6 +966,7 @@ export interface UsageTotals {
 
 const EMPTY_TOTALS: UsageTotals = {
   requests: 0,
+  failed: 0,
   inputTokens: 0,
   cachedInputTokens: 0,
   outputTokens: 0,
@@ -852,71 +976,80 @@ const EMPTY_TOTALS: UsageTotals = {
   resources: 0,
 };
 
+/** The sums over every request in the scope. */
 export async function usageTotals(
   principal: Principal,
-  since: Date | null,
+  scope: UsageScope,
 ): Promise<UsageTotals> {
   const shopId = await shopIdFor(principal);
-  const where: Prisma.AiUsageWhereInput = {
-    shopId,
-    ...(since ? { createdAt: { gte: since } } : {}),
-  };
-  const [aggregate, unpriced, resources] = await Promise.all([
-    prisma.aiUsage.aggregate({
-      where,
-      _count: { _all: true },
-      _sum: {
-        inputTokens: true,
-        cachedInputTokens: true,
-        outputTokens: true,
-        totalTokens: true,
-        estimatedCostMicros: true,
-      },
-    }),
-    prisma.aiUsage.count({ where: { ...where, estimatedCostMicros: null } }),
-    prisma.aiUsage.findMany({
-      where: { ...where, resourceId: { not: null }, result: "ok" },
-      distinct: ["resourceId"],
-      select: { resourceId: true },
-    }),
-  ]);
+  const rows = await prisma.$queryRaw<
+    Array<{
+      requests: number;
+      failed: number;
+      input_tokens: bigint;
+      cached_input_tokens: bigint;
+      output_tokens: bigint;
+      total_tokens: bigint;
+      cost_micros: bigint;
+      unpriced: number;
+      resources: number;
+    }>
+  >`
+    SELECT
+      count(*)::int AS "requests",
+      count(*) FILTER (WHERE u."result" = 'failed')::int AS "failed",
+      coalesce(sum(u."input_tokens"), 0)::bigint AS "input_tokens",
+      coalesce(sum(u."cached_input_tokens"), 0)::bigint AS "cached_input_tokens",
+      coalesce(sum(u."output_tokens"), 0)::bigint AS "output_tokens",
+      coalesce(sum(u."total_tokens"), 0)::bigint AS "total_tokens",
+      coalesce(sum(u."estimated_cost_micros"), 0)::bigint AS "cost_micros",
+      count(*) FILTER (WHERE u."estimated_cost_micros" IS NULL)::int AS "unpriced",
+      count(DISTINCT u."resource_id") FILTER (WHERE u."result" = 'ok')::int AS "resources"
+    FROM "ai_usage" u
+    WHERE ${usageSql(shopId, scope)}
+  `;
+  const row = rows[0];
+  if (!row) return EMPTY_TOTALS;
   return {
-    ...EMPTY_TOTALS,
-    requests: aggregate._count._all,
-    inputTokens: aggregate._sum.inputTokens ?? 0,
-    cachedInputTokens: aggregate._sum.cachedInputTokens ?? 0,
-    outputTokens: aggregate._sum.outputTokens ?? 0,
-    totalTokens: aggregate._sum.totalTokens ?? 0,
-    costMicros: aggregate._sum.estimatedCostMicros ?? 0n,
-    unpriced,
-    resources: resources.length,
+    requests: Number(row.requests),
+    failed: Number(row.failed),
+    inputTokens: Number(row.input_tokens),
+    cachedInputTokens: Number(row.cached_input_tokens),
+    outputTokens: Number(row.output_tokens),
+    totalTokens: Number(row.total_tokens),
+    costMicros: BigInt(row.cost_micros),
+    unpriced: Number(row.unpriced),
+    resources: Number(row.resources),
   };
 }
 
-export type UsageDimension = "targetLocale" | "model" | "resourceType" | "syncId";
+export type UsageDimension = "targetLocale" | "model" | "resourceType";
 
 export interface UsageBreakdownRow {
   key: string | null;
   requests: number;
   inputTokens: number;
+  cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
   costMicros: bigint;
 }
 
+/** The scope's requests grouped one way, most tokens first. */
 export async function usageBreakdown(
   principal: Principal,
   by: UsageDimension,
-  since: Date | null,
-  limit = 20,
+  scope: UsageScope,
+  limit = 50,
 ): Promise<UsageBreakdownRow[]> {
   const shopId = await shopIdFor(principal);
   const groups = await prisma.aiUsage.groupBy({
     by: [by],
-    where: { shopId, ...(since ? { createdAt: { gte: since } } : {}) },
+    where: usageWhere(shopId, scope),
     _count: { _all: true },
     _sum: {
       inputTokens: true,
+      cachedInputTokens: true,
       outputTokens: true,
       totalTokens: true,
       estimatedCostMicros: true,
@@ -928,121 +1061,257 @@ export async function usageBreakdown(
     key: group[by],
     requests: group._count._all,
     inputTokens: group._sum.inputTokens ?? 0,
+    cachedInputTokens: group._sum.cachedInputTokens ?? 0,
     outputTokens: group._sum.outputTokens ?? 0,
     totalTokens: group._sum.totalTokens ?? 0,
     costMicros: group._sum.estimatedCostMicros ?? 0n,
   }));
 }
 
-/** Usage for one sync, for its page. */
-export async function usageForSync(
-  principal: Principal,
-  syncId: string,
-): Promise<UsageTotals> {
-  const shopId = await shopIdFor(principal);
-  const where: Prisma.AiUsageWhereInput = { shopId, syncId };
-  const [aggregate, unpriced] = await Promise.all([
-    prisma.aiUsage.aggregate({
-      where,
-      _count: { _all: true },
-      _sum: {
-        inputTokens: true,
-        cachedInputTokens: true,
-        outputTokens: true,
-        totalTokens: true,
-        estimatedCostMicros: true,
-      },
-    }),
-    prisma.aiUsage.count({ where: { ...where, estimatedCostMicros: null } }),
-  ]);
-  return {
-    ...EMPTY_TOTALS,
-    requests: aggregate._count._all,
-    inputTokens: aggregate._sum.inputTokens ?? 0,
-    cachedInputTokens: aggregate._sum.cachedInputTokens ?? 0,
-    outputTokens: aggregate._sum.outputTokens ?? 0,
-    totalTokens: aggregate._sum.totalTokens ?? 0,
-    costMicros: aggregate._sum.estimatedCostMicros ?? 0n,
-    unpriced,
-  };
-}
-
 export interface UsageTrendRow {
   /** The bucket's first instant. */
   at: Date;
   requests: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
   totalTokens: number;
   costMicros: bigint;
 }
 
 /**
- * Usage over time for the usage page's chart: one row per day or month that
- * saw a request, oldest first. The same sums as `usageTotals`, cut by
- * `created_at`; Prisma's `groupBy` cannot truncate a date, so this is SQL.
+ * Usage over time for the usage page's chart: one row per hour, day or
+ * month that saw a request, oldest first. The same sums as `usageTotals`,
+ * cut by `created_at`; Prisma's `groupBy` cannot truncate a date, so this
+ * is SQL.
  */
 export async function usageTrend(
   principal: Principal,
-  since: Date | null,
-  bucket: "day" | "month",
+  scope: UsageScope,
+  bucket: "hour" | "day" | "month",
 ): Promise<UsageTrendRow[]> {
   const shopId = await shopIdFor(principal);
-  const sinceClause = since
-    ? Prisma.sql`AND "created_at" >= ${since}`
-    : Prisma.empty;
   const rows = await prisma.$queryRaw<
     Array<{
       at: Date;
       requests: number;
+      input_tokens: bigint;
+      cached_input_tokens: bigint;
+      output_tokens: bigint;
       total_tokens: bigint;
       cost_micros: bigint;
     }>
   >`
     SELECT
-      date_trunc(${bucket}::text, "created_at") AS "at",
+      date_trunc(${bucket}::text, u."created_at") AS "at",
       count(*)::int AS "requests",
-      coalesce(sum("total_tokens"), 0)::bigint AS "total_tokens",
-      coalesce(sum("estimated_cost_micros"), 0)::bigint AS "cost_micros"
-    FROM "ai_usage"
-    WHERE "shop_id" = ${shopId} ${sinceClause}
+      coalesce(sum(u."input_tokens"), 0)::bigint AS "input_tokens",
+      coalesce(sum(u."cached_input_tokens"), 0)::bigint AS "cached_input_tokens",
+      coalesce(sum(u."output_tokens"), 0)::bigint AS "output_tokens",
+      coalesce(sum(u."total_tokens"), 0)::bigint AS "total_tokens",
+      coalesce(sum(u."estimated_cost_micros"), 0)::bigint AS "cost_micros"
+    FROM "ai_usage" u
+    WHERE ${usageSql(shopId, scope)}
     GROUP BY 1
     ORDER BY 1
   `;
   return rows.map((row) => ({
     at: row.at,
     requests: Number(row.requests),
+    inputTokens: Number(row.input_tokens),
+    cachedInputTokens: Number(row.cached_input_tokens),
+    outputTokens: Number(row.output_tokens),
     totalTokens: Number(row.total_tokens),
     costMicros: BigInt(row.cost_micros),
   }));
 }
 
-export type SyncSummary = Pick<
-  Sync,
+export type SyncUsageSort =
+  | "started"
+  | "cost"
+  | "tokens"
+  | "requests"
+  | "resources";
+
+export interface SyncUsageQuery {
+  sort: SyncUsageSort;
+  desc: boolean;
+  /** One-based. */
+  page: number;
+  pageSize: number;
+  /** Only requests into this language. */
+  locale?: string | null;
+  /** Only syncs run in this mode. */
+  mode?: TranslationSyncMode | null;
+}
+
+export interface SyncUsageRow {
+  /** Null for requests outside any sync. */
+  syncId: string | null;
+  kind: TranslationSyncKind | null;
+  mode: TranslationSyncMode | null;
+  status: TranslationSyncStatus | null;
+  targetLocales: string[];
+  doneResources: number | null;
+  /** When the sync was created, or the first request when there is no sync. */
+  startedAt: Date;
+  requests: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costMicros: bigint;
+  unpriced: number;
+  /** Distinct resources the provider answered for. */
+  resources: number;
+}
+
+export interface SyncUsagePage {
+  rows: SyncUsageRow[];
+  /** How many syncs the scope and filters cover, across every page. */
+  total: number;
+}
+
+const SYNC_SORT_COLUMN: Record<SyncUsageSort, Prisma.Sql> = {
+  started: Prisma.sql`"started_at"`,
+  cost: Prisma.sql`"cost_micros"`,
+  tokens: Prisma.sql`"total_tokens"`,
+  requests: Prisma.sql`"requests"`,
+  resources: Prisma.sql`"resources"`,
+};
+
+/**
+ * The scope's requests grouped by the sync that made them, joined to the
+ * sync so a row can be named, sorted and paged in the database. One query:
+ * the page's rows and the count of every group come back together, so a
+ * hundred syncs are never a hundred reads.
+ *
+ * The join is a left join and the group key the request's own `sync_id`, so
+ * requests outside any sync (language detection) are one row of their own
+ * and a deleted sync's requests are still counted.
+ */
+export async function usageBySync(
+  principal: Principal,
+  scope: UsageScope,
+  query: SyncUsageQuery,
+): Promise<SyncUsagePage> {
+  const shopId = await shopIdFor(principal);
+  const orderBy = SYNC_SORT_COLUMN[query.sort];
+  const direction = query.desc ? Prisma.sql`DESC` : Prisma.sql`ASC`;
+  const offset = Math.max(0, query.page - 1) * query.pageSize;
+  const rows = await prisma.$queryRaw<
+    Array<{
+      sync_id: string | null;
+      kind: TranslationSyncKind | null;
+      mode: TranslationSyncMode | null;
+      status: TranslationSyncStatus | null;
+      target_locales: string[] | null;
+      done_resources: number | null;
+      started_at: Date;
+      requests: number;
+      input_tokens: bigint;
+      cached_input_tokens: bigint;
+      output_tokens: bigint;
+      total_tokens: bigint;
+      cost_micros: bigint;
+      unpriced: number;
+      resources: number;
+      groups: number;
+    }>
+  >`
+    SELECT * FROM (
+      SELECT
+        u."sync_id",
+        s."kind",
+        s."mode",
+        s."status",
+        s."target_locales",
+        s."done_resources",
+        coalesce(s."created_at", min(u."created_at")) AS "started_at",
+        count(*)::int AS "requests",
+        coalesce(sum(u."input_tokens"), 0)::bigint AS "input_tokens",
+        coalesce(sum(u."cached_input_tokens"), 0)::bigint AS "cached_input_tokens",
+        coalesce(sum(u."output_tokens"), 0)::bigint AS "output_tokens",
+        coalesce(sum(u."total_tokens"), 0)::bigint AS "total_tokens",
+        coalesce(sum(u."estimated_cost_micros"), 0)::bigint AS "cost_micros",
+        count(*) FILTER (WHERE u."estimated_cost_micros" IS NULL)::int AS "unpriced",
+        count(DISTINCT u."resource_id") FILTER (WHERE u."result" = 'ok')::int AS "resources",
+        count(*) OVER ()::int AS "groups"
+      FROM "ai_usage" u
+      LEFT JOIN "translation_sync" s ON s."id" = u."sync_id"
+      WHERE ${usageSql(shopId, scope)}
+        ${query.locale ? Prisma.sql`AND u."target_locale" = ${query.locale}` : Prisma.empty}
+        ${query.mode ? Prisma.sql`AND s."mode"::text = ${query.mode}` : Prisma.empty}
+      GROUP BY u."sync_id", s."id"
+    ) grouped
+    ORDER BY ${orderBy} ${direction} NULLS LAST, "sync_id"
+    LIMIT ${query.pageSize} OFFSET ${offset}
+  `;
+  return {
+    rows: rows.map((row) => ({
+      syncId: row.sync_id,
+      kind: row.kind,
+      mode: row.mode,
+      status: row.status,
+      targetLocales: row.target_locales ?? [],
+      doneResources: row.done_resources,
+      startedAt: row.started_at,
+      requests: Number(row.requests),
+      inputTokens: Number(row.input_tokens),
+      cachedInputTokens: Number(row.cached_input_tokens),
+      outputTokens: Number(row.output_tokens),
+      totalTokens: Number(row.total_tokens),
+      costMicros: BigInt(row.cost_micros),
+      unpriced: Number(row.unpriced),
+      resources: Number(row.resources),
+    })),
+    total: Number(rows[0]?.groups ?? 0),
+  };
+}
+
+export type UsageRequest = Pick<
+  Prisma.AiUsageGetPayload<Record<string, never>>,
   | "id"
-  | "kind"
-  | "mode"
-  | "status"
-  | "sourceLocale"
-  | "targetLocales"
-  | "doneResources"
+  | "resourceId"
+  | "resourceType"
+  | "targetLocale"
+  | "purpose"
+  | "model"
+  | "inputTokens"
+  | "cachedInputTokens"
+  | "outputTokens"
+  | "totalTokens"
+  | "result"
+  | "errorMessage"
+  | "estimatedCostMicros"
   | "createdAt"
 >;
 
-/** The syncs behind a usage breakdown, so a row can be named and linked. */
-export async function syncSummaries(
+/** The scope's requests one by one, newest first, for a drill-down. */
+export async function usageRequests(
   principal: Principal,
-  ids: readonly string[],
-): Promise<SyncSummary[]> {
-  if (ids.length === 0) return [];
-  return prisma.translationSync.findMany({
-    where: { shop: { domain: shopDomainOf(principal) }, id: { in: [...ids] } },
+  scope: UsageScope,
+  limit = 50,
+): Promise<UsageRequest[]> {
+  const shopId = await shopIdFor(principal);
+  return prisma.aiUsage.findMany({
+    where: usageWhere(shopId, scope),
+    orderBy: { createdAt: "desc" },
+    take: limit,
     select: {
       id: true,
-      kind: true,
-      mode: true,
-      status: true,
-      sourceLocale: true,
-      targetLocales: true,
-      doneResources: true,
+      resourceId: true,
+      resourceType: true,
+      targetLocale: true,
+      purpose: true,
+      model: true,
+      inputTokens: true,
+      cachedInputTokens: true,
+      outputTokens: true,
+      totalTokens: true,
+      result: true,
+      errorMessage: true,
+      estimatedCostMicros: true,
       createdAt: true,
     },
   });

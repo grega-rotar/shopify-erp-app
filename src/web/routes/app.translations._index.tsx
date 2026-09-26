@@ -13,6 +13,7 @@ import { authenticate } from "~/adapters/shopify/shopify.server";
 import { requestCoverageRefresh } from "~/adapters/translations/syncs.server";
 import { describeLanguage } from "~/domain/translations/languages";
 import { LocaleFlag } from "~/web/components/locale-flag";
+import { Columns } from "~/web/components/page-columns";
 import { TranslationsNav } from "~/web/components/translations-nav";
 import { formatDateTime } from "~/web/lib/datetime";
 import { principalFromSession } from "~/web/lib/principal.server";
@@ -82,7 +83,8 @@ export default function Languages() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const result = fetcher.data;
-  useLivePolling(data.kind === "read" && data.activeSyncs > 0);
+  const counting = data.kind === "read" && data.coverageCount.counting;
+  useLivePolling(data.kind === "read" && (data.activeSyncs > 0 || counting));
 
   useEffect(() => {
     if (!result?.ok) return;
@@ -90,7 +92,7 @@ export default function Languages() {
   }, [result]);
 
   return (
-    <s-page heading="Translations">
+    <s-page heading="Translations" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
@@ -294,15 +296,25 @@ export default function Languages() {
                 </s-table>
               )}
 
+              {data.coverageCount.failed ? (
+                <s-banner tone="critical" heading="Coverage could not be counted">
+                  <s-paragraph>
+                    {`The count started ${formatDateTime(data.coverageCount.failed.at)} failed: ${data.coverageCount.failed.reason}`}
+                  </s-paragraph>
+                </s-banner>
+              ) : null}
+
               <s-grid
                 gridTemplateColumns="@container (inline-size <= 560px) 1fr, 1fr auto"
                 gap="base"
                 alignItems="center"
               >
                 <s-text color="subdued">
-                  {data.coverageAt
-                    ? `Coverage counted ${formatDateTime(data.coverageAt)} across every translatable field. It is recounted after each sync and nightly.`
-                    : "Coverage has not been counted yet. Count it once to see what each language is missing."}
+                  {counting
+                    ? "Counting translations across the store. This takes a few minutes for a large catalogue; the table updates when it is done."
+                    : data.coverageAt
+                      ? `Coverage counted ${formatDateTime(data.coverageAt)} across every translatable field. It is recounted after each sync and nightly.`
+                      : "Coverage has not been counted yet. Count it once to see what each language is missing."}
                 </s-text>
                 <s-button
                   type="button"
@@ -312,50 +324,58 @@ export default function Languages() {
                       { method: "post" },
                     )
                   }
-                  {...(fetcher.state !== "idle"
+                  {...(fetcher.state !== "idle" || counting
                     ? { disabled: true, loading: true }
                     : {})}
                 >
-                  {data.coverageAt ? "Count again" : "Count coverage"}
+                  {counting
+                    ? "Counting"
+                    : data.coverageAt
+                      ? "Count again"
+                      : "Count coverage"}
                 </s-button>
               </s-grid>
             </s-stack>
           </s-section>
         ) : null}
 
-        {data.kind === "read" && data.primary ? (
-          <s-section heading="Source language">
-            <s-stack direction="block" gap="small-300">
-              <s-text>
-                {`${data.primary.name} (${data.primary.locale}) is the store's default language in Shopify and the language the AI translates from.`}
-              </s-text>
-              <s-text color="subdued">
-                A page, product or article written in another language can name
-                its own source in the editor; it is then translated directly
-                from that language, never through the default.
-              </s-text>
-            </s-stack>
-          </s-section>
-        ) : null}
-
         {data.kind === "read" ? (
-          <s-section heading="Store context">
-            <s-stack direction="block" gap="small-300">
-              <s-text>
-                {data.intelligence.summary
-                  ? data.intelligence.summary
-                  : data.intelligence.building
-                    ? "Reading the store to learn what it sells."
-                    : "The AI learns what the store sells before the first translation."}
-              </s-text>
-              <s-text color="subdued">
-                {data.intelligence.terms > 0
-                  ? `${data.intelligence.terms.toLocaleString("en")} ${data.intelligence.terms === 1 ? "term" : "terms"} learnt from the store's own navigation, collections and products. `
-                  : "Terminology is learnt from the store's own navigation, collections and products. "}
-                <s-link href={TRANSLATION_ROUTES.context}>Store context</s-link>
-              </s-text>
-            </s-stack>
-          </s-section>
+          <Columns>
+            {data.primary ? (
+              <s-section heading="Source language">
+                <s-stack direction="block" gap="small-300">
+                  <s-text>
+                    {`${data.primary.name} (${data.primary.locale}) is the store's default language in Shopify and the language the AI translates from.`}
+                  </s-text>
+                  <s-text color="subdued">
+                    A page, product or article written in another language can
+                    name its own source in the editor; it is then translated
+                    directly from that language, never through the default.
+                  </s-text>
+                </s-stack>
+              </s-section>
+            ) : null}
+
+            <s-section heading="Store context">
+              <s-stack direction="block" gap="small-300">
+                <s-text>
+                  {data.intelligence.summary
+                    ? data.intelligence.summary
+                    : data.intelligence.building
+                      ? "Reading the store to learn what it sells."
+                      : "The AI learns what the store sells before the first translation."}
+                </s-text>
+                <s-text color="subdued">
+                  {data.intelligence.terms > 0
+                    ? `${data.intelligence.terms.toLocaleString("en")} ${data.intelligence.terms === 1 ? "term" : "terms"} learnt from the store's own navigation, collections and products. `
+                    : "Terminology is learnt from the store's own navigation, collections and products. "}
+                  <s-link href={TRANSLATION_ROUTES.context}>
+                    Store context
+                  </s-link>
+                </s-text>
+              </s-stack>
+            </s-section>
+          </Columns>
         ) : null}
       </s-stack>
     </s-page>

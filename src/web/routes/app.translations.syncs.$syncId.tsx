@@ -16,7 +16,7 @@ import {
   getSync,
   listSyncItems,
   requestSyncCancel,
-  usageForSync,
+  usageTotals,
 } from "~/adapters/db/repositories/translations.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { formatCount } from "~/domain/translations/estimate";
@@ -37,7 +37,7 @@ import {
 import { redirectWithin } from "~/web/lib/redirects";
 import {
   ITEM_STATUS_LABEL,
-  SYNC_KIND_LABEL,
+  syncName,
   SYNC_STATUS_LABEL,
   TRANSLATION_ROUTES,
   describeResourceId,
@@ -79,7 +79,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       limit: 200,
     }),
     countSyncItems(principal, id),
-    usageForSync(principal, id),
+    usageTotals(principal, { syncId: id }),
   ]);
 
   return {
@@ -269,14 +269,14 @@ export default function SyncPage() {
       shopify.toast.show(fetcher.data.message);
   }, [fetcher.data]);
 
-  const heading = `${SYNC_KIND_LABEL[sync.kind] ?? sync.kind} · ${formatDateTime(sync.createdAt)}`;
+  const heading = `${syncName({ kind: sync.kind, requestedBy: sync.requestedBy, resources: sync.resourceIds.length })} · ${formatDateTime(sync.createdAt)}`;
   const progress =
     sync.totalResources > 0
       ? `${sync.doneResources.toLocaleString("en")} of ${sync.totalResources.toLocaleString("en")} resources`
       : `${sync.doneResources.toLocaleString("en")} resources so far`;
 
   return (
-    <s-page heading={heading}>
+    <s-page heading={heading} inlineSize="large">
       <s-link slot="breadcrumb-actions" href={TRANSLATION_ROUTES.syncs}>
         Syncs
       </s-link>
@@ -337,7 +337,7 @@ export default function SyncPage() {
             </s-text>
             <s-text color="subdued">
               {sync.resourceIds.length > 0
-                ? `${sync.resourceIds.length === 1 ? "One resource" : `${sync.resourceIds.length} resources`}: ${sync.resourceIds.map(describeResourceId).join(", ")}`
+                ? `${sync.resourceIds.length === 1 ? "One resource" : `${sync.resourceIds.length.toLocaleString("en")} resources`}: ${sync.resourceIds.slice(0, 20).map(describeResourceId).join(", ")}${sync.resourceIds.length > 20 ? ` and ${(sync.resourceIds.length - 20).toLocaleString("en")} more` : ""}`
                 : `Content: ${sync.resourceTypes
                     .map((type) =>
                       isResourceType(type) ? RESOURCE_TYPE_LABEL[type] : type,
@@ -348,7 +348,9 @@ export default function SyncPage() {
               {[
                 sync.requestedBy
                   ? `Started by ${sync.requestedBy}`
-                  : "Started automatically",
+                  : sync.kind === "resource"
+                    ? "Collected from product changes in Shopify"
+                    : "Started automatically",
                 sync.startedAt
                   ? `began ${formatDateTime(sync.startedAt)}`
                   : null,

@@ -3,6 +3,13 @@ import { createHash } from "node:crypto";
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
 import { correctFields, translateFields, type TranslateOutcome } from "~/adapters/ai/openai.server";
+import {
+  clearFailure,
+  isBackingOff,
+  listFailures,
+  recordFailure,
+  type StoredFailure,
+} from "~/adapters/db/repositories/translation-failures.server";
 import type { StoredMemory } from "~/adapters/db/repositories/translation-intelligence.server";
 import {
   glossaryFor,
@@ -46,6 +53,7 @@ import { normaliseTerm } from "~/domain/translations/text";
 import {
   RESOURCE_TYPE_LABEL,
   defaultLanguageSettings,
+  keptKeys,
   type GlossaryTerm,
   type LanguageSettings,
   type OwnershipRecord,
@@ -148,6 +156,7 @@ export async function translateResource(
     failed: 0,
   };
 
+  const failures = await listFailures(ctx.principal, resource.resourceId);
   const perLocale = await Promise.all(
     input.targetLocales
       // Shopify does not take translations for the primary locale: its text
@@ -162,6 +171,7 @@ export async function translateResource(
           source,
           ownership: input.ownership,
           glossary: input.glossaries.get(locale) ?? [],
+          failure: failures.get(locale),
         }),
       ),
   );
@@ -192,6 +202,21 @@ interface LocaleInput {
   source: SourceResolution;
   ownership: readonly OwnershipRecord[];
   glossary: readonly GlossaryTerm[];
+  /** The last failure for this resource and language, if one is remembered. */
+  failure?: StoredFailure;
+}
+
+/**
+ * The identity of what is sent to the provider: the fields and the digests
+ * of their source. A remembered failure applies while this is unchanged.
+ */
+function sourceKeyOf(fields: readonly SourceField[]): string {
+  return hashValue(
+    fields
+      .map((field) => `${field.key}:${field.digest ?? hashValue(field.value)}`)
+      .sort()
+      .join("|"),
+  );
 }
 
 async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Promise<LocaleResult> {
@@ -206,6 +231,7 @@ async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Prom
     policy: settings.overwritePolicy,
     sourceLocale: input.source.locale,
     targetLocale: input.locale,
+    keep: keptKeys(settings.keepOriginal, input.resourceType),
   });
   const summary = summarisePlan(decisions);
   const base = {
@@ -247,10 +273,48 @@ async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Prom
   let trace: TranslationTrace | null = null;
   let learned: Array<{ sourceText: string; targetText: string }> = [];
 
+  const sourceKey = sourceKeyOf(toTranslate.map((d) => d.field));
+  // Automatic work (the nightly sync, a product webhook) does not pay again
+  // for a failure it already had on the same source; it backs off, and
+  // stops after a few tries until the source changes. A person asking —
+  // a sync they started, the editor — always tries.
+  if (
+    toTranslate.length > 0 &&
+    ctx.requestedBy === null &&
+    isBackingOff(input.failure, sourceKey, new Date())
+  ) {
+    return {
+      item: {
+        ...base,
+        status: "skipped",
+        fields: 0,
+        detail: {
+          skipped: { ...summary.skipped, failed_before: toTranslate.length + toCopy.length },
+          lastError: input.failure?.lastError ?? null,
+        },
+      },
+      translated: 0,
+      copied: 0,
+      skipped: skippedCount + toTranslate.length + toCopy.length,
+      failed: 0,
+    };
+  }
+
   if (toTranslate.length > 0) {
     const answer = await answerFields(ctx, input, toTranslate.map((d) => d.field));
     trace = answer.trace;
     if (answer.kind === "failed") {
+      await recordFailure(
+        ctx.principal,
+        {
+          resourceId: input.resource.resourceId,
+          locale: input.locale,
+          sourceKey,
+          error: answer.message,
+          previous: input.failure,
+        },
+        new Date(),
+      );
       getLogger().warn(
         {
           shop: ctx.principal.shopDomain,
@@ -309,6 +373,17 @@ async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Prom
     writes,
   );
   if (written.kind === "rejected") {
+    await recordFailure(
+      ctx.principal,
+      {
+        resourceId: input.resource.resourceId,
+        locale: input.locale,
+        sourceKey,
+        error: `Shopify refused the translation: ${written.messages.join("; ")}`,
+        previous: input.failure,
+      },
+      new Date(),
+    );
     return {
       item: {
         ...base,
@@ -325,6 +400,8 @@ async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Prom
     };
   }
   await recordOwnership(ctx.principal, records, new Date());
+  if (input.failure)
+    await clearFailure(ctx.principal, input.resource.resourceId, input.locale);
   if (learned.length > 0)
     await ctx.intelligence.remember(
       {

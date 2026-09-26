@@ -154,3 +154,43 @@ export async function enqueueInTransaction(
     db: fromPrisma(tx),
   });
 }
+
+export interface JobStatus {
+  state: "created" | "retry" | "active" | "completed" | "cancelled" | "failed";
+  createdOn: Date;
+  completedOn: Date | null;
+  /** What the handler threw, when the job failed. */
+  error: string | null;
+}
+
+/**
+ * The newest job sent under a key, whatever its state. pg-boss keeps finished
+ * jobs for the queue's retention, so a page can say "counting", "counted" or
+ * "the last count failed, and why" without a table of its own. A button whose
+ * work runs somewhere else must be able to show what became of it.
+ */
+export async function latestJobForKey(
+  name: QueueName,
+  key: string,
+): Promise<JobStatus | null> {
+  const boss = await getQueueClient();
+  const jobs = await boss.findJobs<object>(name, { key });
+  let latest: (typeof jobs)[number] | null = null;
+  for (const job of jobs)
+    if (!latest || job.createdOn > latest.createdOn) latest = job;
+  if (!latest) return null;
+  return {
+    state: latest.state,
+    createdOn: latest.createdOn,
+    completedOn: latest.completedOn,
+    error: latest.state === "failed" ? failureMessage(latest.output) : null,
+  };
+}
+
+function failureMessage(output: unknown): string {
+  if (output && typeof output === "object" && "message" in output) {
+    const message = (output as { message: unknown }).message;
+    if (typeof message === "string" && message !== "") return message;
+  }
+  return "The job failed without a reason.";
+}

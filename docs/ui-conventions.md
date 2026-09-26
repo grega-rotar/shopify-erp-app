@@ -63,10 +63,12 @@ MetaKocka does with it are one click away.
 ## Editors with a summary
 An editor whose answer is a number the merchant cannot work out by reading the form —
 how many variants a rule set matches, what a discount comes to — is two columns:
-the form in the order it is built, numbered, and a sticky sidebar (`s-page` with
-`inlineSize="base"` and the `aside` slot) that states where the thing is, what it
-comes to, what could go wrong, and carries the one action that moves it on with the
-reason when that action is closed. The sidebar follows the unsaved form; counts that
+the form in the order it is built, numbered, and a sticky sidebar that states where the
+thing is, what it comes to, what could go wrong, and carries the one action that moves
+it on with the reason when that action is closed. On a `large` page the sidebar is
+`PageColumns` (`web/components/page-columns`), which draws the same shape as `s-page`'s
+`aside` slot does at `inlineSize="base"`; every Translations page is `large`, and two
+short sections that would each be a flat, wide card sit side by side in `Columns`. The sidebar follows the unsaved form; counts that
 need the server refresh under a spinner in a fixed slot, never by emptying the number.
 A choice between three or four kinds of thing, each of which changes the fields that
 follow, is a row of selectable cards (bordered `s-clickable`, the chosen one marked by
@@ -108,6 +110,36 @@ records. Never a bare text link.
 Any control not built from the design system's primitives carries a real label, correct
 roles, keyboard parity with the native equivalent, and announces state changes. It ships
 with a documented reason why a primitive wouldn't do.
+
+The translation editor's rich text field (`web/components/html-editor`) is the one such
+control: `contenteditable` with `role="textbox"`, `aria-multiline` and a real label, a
+toolbar of Polaris buttons, and a link row that opens in the field rather than floating,
+so it is reachable by tab and cannot be mispositioned. The reason a primitive would not
+do is that Polaris has no rich text field and a rich text framework would be a second
+design system inside the page. Everything it renders or accepts on paste goes through
+`web/lib/html`.
+
+## Polaris web components: what only shows up in the browser
+Two things the typings do not say, both learnt by rendering the AI usage page against
+the real `polaris.js`:
+- **`s-button-group` draws nothing outside a page header.** Slotted into `s-page`'s
+  `secondary-actions` it is a group; anywhere else its buttons have no box at all. A row
+  of buttons in a card is an inline `s-stack` of `s-button`s.
+- **An unnamed responsive value needs an `s-query-container`.** `@container (…) A, B` on
+  a grid, box or stack compiles to `@container s-default (…)`, and only
+  `s-query-container` names a container `s-default`; `s-page` and `s-section` do not.
+  Without one in the ancestry every breakpoint on the page is dead and the wide layout is
+  the only layout. Wrap the page's content (and a dialog's, which is outside it) in one.
+- **`s-box background="strong"` is a light grey**, not ink. A bar that must read as a
+  bar is a two-rectangle inline SVG in `--s-color-text` over `--s-color-border`.
+- **The metric figure.** Polaris draws every heading at one size, so a summary strip's
+  numbers are set at 20px on a plain `<span>` inside `s-heading` (`UsageSummary`). That is
+  the one place a page sets its own type size; it is a size on a number, never a colour.
+- **Sortable column headings** are `s-clickable` around `s-text`, not `s-link`: a link is
+  blue, and a row of blue headings reads as navigation.
+- **An area's sections and an index's views are a row of tabs** drawn as buttons — the
+  current one `secondary`, the others `tertiary` with an `href` — the way the admin's own
+  index pages switch views (`TranslationsNav`, `ProductSetupNav`, the editor's kinds).
 
 ---
 

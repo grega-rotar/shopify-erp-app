@@ -11,6 +11,11 @@ import {
  */
 export function ProductSetupNav({ current }: { current: ProductSetupSection }) {
   return (
+    /*
+     * A row of tabs, the way the admin's own index pages switch views: the
+     * current section drawn as the pressed one, the others as quiet
+     * buttons. Buttons with addresses, so each is still a place.
+     */
     <s-box
       paddingBlockEnd="small-300"
       borderWidth="none none small none"
@@ -19,16 +24,20 @@ export function ProductSetupNav({ current }: { current: ProductSetupSection }) {
       accessibilityRole="navigation"
       accessibilityLabel="Metafields sections"
     >
-      <s-stack direction="inline" gap="large" alignItems="center">
+      <s-stack direction="inline" gap="small-400" alignItems="center">
         {PRODUCT_SETUP_SECTIONS.map((section) =>
           section.key === current ? (
-            <s-text key={section.key} type="strong">
+            <s-button
+              key={section.key}
+              variant="secondary"
+              accessibilityLabel={`${section.label}, current section`}
+            >
               {section.label}
-            </s-text>
+            </s-button>
           ) : (
-            <s-link key={section.key} href={section.href}>
+            <s-button key={section.key} variant="tertiary" href={section.href}>
               {section.label}
-            </s-link>
+            </s-button>
           ),
         )}
       </s-stack>

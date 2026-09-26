@@ -43,6 +43,7 @@ export const QUEUES = {
   translationCoverage: "translation-coverage",
   translationResourceEvent: "translation-resource-event",
   translationProfile: "translation-profile",
+  translationRemove: "translation-remove",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -89,6 +90,11 @@ export function translationSyncKey(syncId: string): string {
 /** At most one coverage read waiting per shop. */
 export function translationCoverageKey(shopDomain: string): string {
   return `translation-coverage:${shopDomain}`;
+}
+
+/** One removal of a language's translations at a time, per shop and language. */
+export function translationRemoveKey(shopDomain: string, locale: string): string {
+  return `translation-remove:${shopDomain}:${locale}`;
 }
 
 /** At most one store profile build waiting per shop. */
@@ -431,6 +437,16 @@ export const QUEUE_DEFINITIONS: Record<QueueName, QueueOptions> = {
     retryDelay: 60,
     retryBackoff: true,
     expireInSeconds: 900,
+  },
+  // A merchant deleted every translation in a language: a page of Shopify
+  // reads and removals per pass, handing over to itself. A retried page
+  // removes nothing twice.
+  [QUEUES.translationRemove]: {
+    policy: "short",
+    retryLimit: 4,
+    retryDelay: 60,
+    retryBackoff: true,
+    expireInSeconds: 1800,
   },
   // A retention promise, so it retries like the other compliance work rather
   // than being dropped after a couple of attempts.

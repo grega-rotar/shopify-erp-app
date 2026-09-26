@@ -56,6 +56,8 @@ export interface LanguageSettings {
   autoUpdateOutdated: boolean;
   contentScope: ContentGroup[];
   overwritePolicy: OverwritePolicy;
+  /** Fields left in the source language: the AI never translates them. */
+  keepOriginal: KeepOriginal[];
 }
 
 export function defaultLanguageSettings(locale: string): LanguageSettings {
@@ -66,7 +68,51 @@ export function defaultLanguageSettings(locale: string): LanguageSettings {
     autoUpdateOutdated: false,
     contentScope: [...ALL_CONTENT_GROUPS],
     overwritePolicy: "update_ai_managed",
+    keepOriginal: [],
   };
+}
+
+/**
+ * Fields a merchant may keep in the source language, per language: a
+ * product name that is a brand, an option like "XL". The AI skips them, the
+ * storefront shows the original, and coverage does not count them as
+ * missing. Translations already there are left alone.
+ */
+export type KeepOriginal =
+  | "product_titles"
+  | "product_types"
+  | "product_options"
+  | "collection_titles";
+
+export const KEEP_ORIGINAL: Record<
+  KeepOriginal,
+  { label: string; fields: Partial<Record<ResourceType, readonly string[]>> }
+> = {
+  product_titles: { label: "Product names", fields: { PRODUCT: ["title"] } },
+  product_types: { label: "Product types", fields: { PRODUCT: ["product_type"] } },
+  product_options: {
+    label: "Product option names and values",
+    fields: { PRODUCT_OPTION: ["name"], PRODUCT_OPTION_VALUE: ["name"] },
+  },
+  collection_titles: { label: "Collection names", fields: { COLLECTION: ["title"] } },
+};
+
+export const ALL_KEEP_ORIGINAL = Object.keys(KEEP_ORIGINAL) as KeepOriginal[];
+
+export function isKeepOriginal(value: string): value is KeepOriginal {
+  return value in KEEP_ORIGINAL;
+}
+
+/** The keys of a resource type that stay in the source language. */
+export function keptKeys(
+  keep: readonly KeepOriginal[],
+  type: string,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const choice of keep)
+    for (const key of KEEP_ORIGINAL[choice]?.fields[type as ResourceType] ?? [])
+      keys.add(key);
+  return keys;
 }
 
 /**
@@ -310,3 +356,36 @@ export type TranslationTrace = {
   /** Per attempt, the violations validation found; empty when clean. */
   validation: Array<{ attempt: number; violations: Array<{ key: string; code: string; severity: string }> }>;
 };
+
+/**
+ * The resource type a Shopify id belongs to, from the kind named in the
+ * id: `gid://shopify/Product/…` is a product. Null for a kind this app
+ * does not translate, or an id that is not a Shopify id.
+ */
+const TYPE_BY_GID_KIND: Record<string, ResourceType> = {
+  Product: "PRODUCT",
+  ProductOption: "PRODUCT_OPTION",
+  ProductOptionValue: "PRODUCT_OPTION_VALUE",
+  Collection: "COLLECTION",
+  OnlineStorePage: "PAGE",
+  OnlineStoreBlog: "BLOG",
+  OnlineStoreArticle: "ARTICLE",
+  Page: "PAGE",
+  Blog: "BLOG",
+  Article: "ARTICLE",
+  Menu: "MENU",
+  Link: "LINK",
+  Metafield: "METAFIELD",
+  Metaobject: "METAOBJECT",
+  Shop: "SHOP",
+  ShopPolicy: "SHOP_POLICY",
+  OnlineStoreFilterSetting: "FILTER",
+  DeliveryMethodDefinition: "DELIVERY_METHOD_DEFINITION",
+  SellingPlan: "SELLING_PLAN",
+  SellingPlanGroup: "SELLING_PLAN_GROUP",
+};
+
+export function resourceTypeOfId(resourceId: string): ResourceType | null {
+  const match = /^gid:\/\/shopify\/([A-Za-z]+)\//.exec(resourceId);
+  return match?.[1] ? (TYPE_BY_GID_KIND[match[1]] ?? null) : null;
+}

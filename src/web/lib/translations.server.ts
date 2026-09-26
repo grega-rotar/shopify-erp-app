@@ -12,6 +12,7 @@ import {
   type StoredLanguage,
 } from "~/adapters/db/repositories/translations.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
+import { coverageCountState } from "~/adapters/translations/syncs.server";
 import { totalsFor } from "~/domain/translations/coverage";
 import {
   coveragePercent,
@@ -52,6 +53,8 @@ export interface LanguagesOverview {
   rows: LanguageRow[];
   coverageAt: string | null;
   coverageRows: CoverageRow[];
+  /** A count is waiting or running; the last one failed since the cache was written. */
+  coverageCount: { counting: boolean; failed: { at: string; reason: string } | null };
   ai: { configured: boolean; model: string };
   activeSyncs: number;
   /** What the AI knows about the store, in a line (docs/translations.md § Store profile). */
@@ -80,6 +83,7 @@ export async function loadLanguagesOverview(
   ]);
   if (locales.kind === "unavailable")
     return { kind: "unavailable", reason: locales.reason, ai };
+  const count = await coverageCountState(principal, coverage.readAt);
   const primaryLocale = locales.locales.find((locale) => locale.primary)?.locale;
   const terms = primaryLocale ? await countTerms(principal, primaryLocale) : 0;
 
@@ -122,6 +126,12 @@ export async function loadLanguagesOverview(
     rows,
     coverageAt: coverage.readAt?.toISOString() ?? null,
     coverageRows: coverage.rows,
+    coverageCount: {
+      counting: count.counting,
+      failed: count.failed
+        ? { at: count.failed.at.toISOString(), reason: count.failed.reason }
+        : null,
+    },
     ai,
     activeSyncs: active.length,
     intelligence: {

@@ -2,13 +2,20 @@ import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TranslateOutcome } from "~/adapters/ai/openai.server";
+import type * as FailureRepository from "~/adapters/db/repositories/translation-failures.server";
+import type { StoredFailure } from "~/adapters/db/repositories/translation-failures.server";
 import type { StoredMemory } from "~/adapters/db/repositories/translation-intelligence.server";
 import type * as ShopifyTranslations from "~/adapters/shopify/translations";
 import type { TranslatableResource } from "~/adapters/shopify/translations";
 import type { Intelligence } from "~/adapters/translations/intelligence.server";
 import type { TranslationRequest } from "~/domain/translations/prompt";
 import type { StoredTerm } from "~/domain/translations/terminology";
-import type { GlossaryTerm, OwnershipRecord, TranslationTrace } from "~/domain/translations/types";
+import {
+  defaultLanguageSettings,
+  type GlossaryTerm,
+  type OwnershipRecord,
+  type TranslationTrace,
+} from "~/domain/translations/types";
 import type { Violation } from "~/domain/translations/validate";
 import { serviceToken } from "~/domain/types";
 import { WATERSPORTS_MENU } from "../fixtures/translations/snapshots";
@@ -27,6 +34,8 @@ const provider = {
 };
 const shopify = { register: vi.fn() };
 const repo = { recordOwnership: vi.fn(), glossaryFor: vi.fn() };
+/** Remembered failures, per `resourceId|locale`, as the repository would hold them. */
+const failures = new Map<string, StoredFailure>();
 
 vi.mock("~/adapters/ai/openai.server", () => ({
   translateFields: (_principal: unknown, request: TranslationRequest) => provider.translate(request),
@@ -39,6 +48,32 @@ vi.mock("~/adapters/shopify/translations", async (importOriginal) => {
     ...original,
     registerTranslations: (_admin: unknown, resourceId: string, writes: unknown) =>
       shopify.register(resourceId, writes),
+  };
+});
+vi.mock("~/adapters/db/repositories/translation-failures.server", async (importOriginal) => {
+  const original = await importOriginal<typeof FailureRepository>();
+  return {
+    ...original,
+    listFailures: async (_principal: unknown, resourceId: string) =>
+      new Map([...failures].filter(([key]) => key.startsWith(`${resourceId}|`)).map(([, f]) => [f.locale, f])),
+    recordFailure: async (
+      _principal: unknown,
+      input: { resourceId: string; locale: string; sourceKey: string; error: string; previous?: StoredFailure },
+      now: Date,
+    ) => {
+      const attempts = input.previous?.sourceKey === input.sourceKey ? input.previous.attempts + 1 : 1;
+      failures.set(`${input.resourceId}|${input.locale}`, {
+        locale: input.locale,
+        sourceKey: input.sourceKey,
+        attempts,
+        lastError: input.error,
+        failedAt: now,
+        retryAfter: original.nextRetry(attempts, now),
+      });
+    },
+    clearFailure: async (_principal: unknown, resourceId: string, locale: string) => {
+      failures.delete(`${resourceId}|${locale}`);
+    },
   };
 });
 vi.mock("~/adapters/db/repositories/translations.server", () => ({
@@ -168,6 +203,7 @@ beforeEach(() => {
   shopify.register.mockReset().mockResolvedValue({ kind: "ok", written: 1 });
   repo.recordOwnership.mockReset().mockResolvedValue(undefined);
   remembered.mockReset();
+  failures.clear();
 });
 
 describe("the engine", () => {
@@ -359,5 +395,57 @@ describe("the engine", () => {
     expect(outcome.items[0]?.error).toBe("The provider answered 500.");
     expect(shopify.register).not.toHaveBeenCalled();
     expect(traceOf(outcome)).toMatchObject({ attempts: 1, model: null });
+  });
+
+  it("does not pay again for a failure automatic work already had on the same source", async () => {
+    provider.translate.mockResolvedValue({ kind: "failed", message: "The reply left out title.", retryable: false });
+    const res = resource("gid://shopify/Link/10", [{ key: "title", value: "Clothing" }]);
+    await run(intelligence(), res);
+    expect(provider.translate).toHaveBeenCalledTimes(1);
+
+    // The nightly sync, a webhook: same source, inside the backoff.
+    const again = await run(intelligence(), res);
+    expect(provider.translate).toHaveBeenCalledTimes(1);
+    expect(again.failed).toBe(0);
+    expect(again.items[0]).toMatchObject({ status: "skipped", detail: { skipped: { failed_before: 1 } } });
+
+    // The source changed: that is new work.
+    const changed = resource("gid://shopify/Link/10", [{ key: "title", value: "Clothes" }]);
+    changed.fields[0]!.digest = "digest-title-2";
+    await run(intelligence(), changed);
+    expect(provider.translate).toHaveBeenCalledTimes(2);
+  });
+
+  it("always tries when a person asks, and forgets the failure once it works", async () => {
+    provider.translate.mockResolvedValueOnce({ kind: "failed", message: "The provider answered 500.", retryable: true });
+    const res = resource("gid://shopify/Link/11", [{ key: "title", value: "Clothing" }]);
+    await run(intelligence(), res);
+    provider.translate.mockImplementation(answer({ title: "Oblačila" }));
+    const outcome = await translateResource(ctx(intelligence(), { requestedBy: "person@example.com" }), {
+      resource: res,
+      resourceType: "LINK",
+      targetLocales: ["sl"],
+      override: null,
+      ownership: [],
+      glossaries: new Map(),
+    });
+    expect(outcome.translated).toBe(1);
+    expect(failures.size).toBe(0);
+  });
+
+  it("leaves the fields a language keeps in the original language alone", async () => {
+    provider.translate.mockImplementation(answer({ body_html: "<p>Opis</p>" }));
+    const res = resource("gid://shopify/Product/12", [
+      { key: "title", value: "Duotone Unit" },
+      { key: "body_html", value: "<p>Text</p>", type: "HTML" },
+    ]);
+    const outcome = await translateResource(
+      ctx(intelligence(), {
+        settings: new Map([["sl", { ...defaultLanguageSettings("sl"), keepOriginal: ["product_titles"] }]]),
+      }),
+      { resource: res, resourceType: "PRODUCT", targetLocales: ["sl"], override: null, ownership: [], glossaries: new Map() },
+    );
+    expect(provider.translate.mock.calls[0]![0].fields.map((f) => f.key)).toEqual(["body_html"]);
+    expect(outcome.items[0]?.detail).toMatchObject({ skipped: { kept_original: 1 } });
   });
 });

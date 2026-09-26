@@ -8,10 +8,11 @@ import {
   summarisePlan,
   type PlanInput,
 } from "~/domain/translations/plan";
-import type {
-  ExistingTranslation,
-  OwnershipRecord,
-  SourceField,
+import {
+  resourceTypeOfId,
+  type ExistingTranslation,
+  type OwnershipRecord,
+  type SourceField,
 } from "~/domain/translations/types";
 
 /**
@@ -229,5 +230,17 @@ describe("planResource", () => {
     expect(title && title.kind === "skip" ? title.reason : null).toBe(
       "protected_manual",
     );
+  });
+});
+
+describe("resourceTypeOfId", () => {
+  it("reads the kind out of a Shopify id, and refuses anything else", () => {
+    expect(resourceTypeOfId("gid://shopify/Product/15968997376330")).toBe("PRODUCT");
+    expect(resourceTypeOfId("gid://shopify/Menu/1")).toBe("MENU");
+    expect(resourceTypeOfId("gid://shopify/Link/42")).toBe("LINK");
+    expect(resourceTypeOfId("gid://shopify/OnlineStoreArticle/9")).toBe("ARTICLE");
+    // A kind this app does not translate, and something that is not an id.
+    expect(resourceTypeOfId("gid://shopify/Customer/1")).toBeNull();
+    expect(resourceTypeOfId("Patrik Micro-X")).toBeNull();
   });
 });
