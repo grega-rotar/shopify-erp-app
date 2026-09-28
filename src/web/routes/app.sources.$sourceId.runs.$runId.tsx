@@ -1,5 +1,4 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useEffect } from "react";
 import {
   useLoaderData,
   useRevalidator,
@@ -10,6 +9,7 @@ import {
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { SettingRow } from "~/web/components/setting-row";
 import { formatDateTime } from "~/web/lib/datetime";
+import { useLiveRevalidation } from "~/web/lib/live";
 import { principalFromSession } from "~/web/lib/principal.server";
 import {
   RUN_STATUS_LABEL,
@@ -53,13 +53,8 @@ export default function RunPage() {
   const revalidator = useRevalidator();
   const active = portal.kind === "read" && isRunActive(portal.data.run);
 
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") void revalidator.revalidate();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [active, revalidator]);
+  // A finished run does not change; only a running one is followed.
+  useLiveRevalidation({ active, idleEveryMs: null });
 
   if (portal.kind !== "read") {
     return (

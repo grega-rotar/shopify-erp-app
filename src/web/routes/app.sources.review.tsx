@@ -34,6 +34,7 @@ import { BulkBar, useSelection } from "~/web/components/bulk-selection";
 import { ConfirmModal } from "~/web/components/confirm-modal";
 import { Dropdown } from "~/web/components/dropdown";
 import { formatListDateTime } from "~/web/lib/datetime";
+import { useLiveRevalidation, useWatchWindow } from "~/web/lib/live";
 import {
   actorFromSession,
   principalFromSession,
@@ -60,6 +61,10 @@ const APPROVE_MODAL_ID = "approve-review";
 interface ActionResult {
   ok: boolean;
   message: string;
+  /** Products now live: they leave the list at once (the search catches up later). */
+  approvedIds?: string[];
+  /** A background translation started: the page follows it closely for a while. */
+  translating?: boolean;
 }
 
 interface Row {
@@ -214,9 +219,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         detail: { title: outcome.title, actor, note: outcome.message },
       });
     const refused = outcomes.filter((o) => !o.ok);
+    const approvedIds = approved.map((o) => o.id);
     if (refused.length > 0)
       return {
         ok: approved.length > 0,
+        approvedIds,
         message: [
           approved.length > 0
             ? `${approved.length} published.`
@@ -230,6 +237,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         approved.length === 1
           ? `${approved[0]?.title ?? "The product"} is live.`
           : `${approved.length} products are live.`,
+      approvedIds,
     } satisfies ActionResult;
   }
 
@@ -296,7 +304,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     return {
       ok: true,
-      message: `Translating ${ids.length} products. Reload in a minute to see them.`,
+      message: `Translating ${ids.length} products. Their rows update as each one is done.`,
+      translating: true,
     } satisfies ActionResult;
   }
 
@@ -347,18 +356,38 @@ export default function Review() {
   const [query, setQuery] = useState(data.q);
   const [pendingApprove, setPendingApprove] = useState<string[]>([]);
 
-  const ids = useMemo(() => data.rows.map((r) => r.id), [data.rows]);
-  const selection = useSelection(ids);
-  const rowsById = useMemo(
-    () => new Map(data.rows.map((r) => [r.id, r])),
-    [data.rows],
+  // What was approved here leaves the list at once. Shopify's search can
+  // still return it for a moment, so it stays hidden until a read no
+  // longer does; the count is corrected by what is hidden.
+  const [approved, setApproved] = useState<ReadonlySet<string>>(new Set());
+  const rows = useMemo(
+    () => data.rows.filter((r) => !approved.has(r.id)),
+    [data.rows, approved],
   );
+  const total = Math.max(0, data.total - (data.rows.length - rows.length));
+
+  // New drafts arrive and approved ones leave without a reload; after an
+  // action the page watches closely until the search has caught up.
+  const [watching, watch] = useWatchWindow(
+    result?.translating ? 180_000 : 30_000,
+  );
+  useLiveRevalidation({ active: watching });
+
+  const ids = useMemo(() => rows.map((r) => r.id), [rows]);
+  const selection = useSelection(ids);
+  const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
   useEffect(() => {
-    if (!result?.ok) return;
+    if (!result) return;
+    if (result.approvedIds?.length) {
+      const done = result.approvedIds;
+      setApproved((current) => new Set([...current, ...done]));
+    }
+    if (!result.ok) return;
     if (typeof shopify !== "undefined") shopify.toast.show(result.message);
     // What was acted on is done with; a new result clears the ticks.
     selection.clear();
+    watch();
   }, [result]);
 
   const submit = (body: Record<string, string>) =>
@@ -379,8 +408,7 @@ export default function Review() {
     }
     setPendingApprove(chosen);
     const modal = document.getElementById(APPROVE_MODAL_ID) as
-      | (HTMLElement & { showOverlay?: () => void })
-      | null;
+      (HTMLElement & { showOverlay?: () => void }) | null;
     modal?.showOverlay?.();
   };
   const pendingIncomplete = pendingApprove
@@ -406,10 +434,10 @@ export default function Review() {
       <s-modal id={HELP_MODAL_ID} heading="About reviewing new products">
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            A source whose new products are set to wait for review creates
-            each new product in Shopify as a draft, tagged {REVIEW_TAG}. A
-            draft is not shown on any sales channel, so nothing is sold before
-            someone has looked at it.
+            A source whose new products are set to wait for review creates each
+            new product in Shopify as a draft, tagged {REVIEW_TAG}. A draft is
+            not shown on any sales channel, so nothing is sold before someone
+            has looked at it.
           </s-paragraph>
           <s-paragraph>
             Check each product, fill in its translations, then approve it.
@@ -479,7 +507,7 @@ export default function Review() {
           </s-banner>
         ) : null}
 
-        {!data.failure && data.rows.length === 0 && !filtered ? (
+        {!data.failure && rows.length === 0 && !filtered ? (
           <s-section>
             <s-box paddingBlock="large-100">
               <s-stack direction="block" gap="small-300" alignItems="center">
@@ -494,7 +522,7 @@ export default function Review() {
           </s-section>
         ) : null}
 
-        {!data.failure && (data.rows.length > 0 || filtered) ? (
+        {!data.failure && (rows.length > 0 || filtered) ? (
           <s-section accessibilityLabel="Products waiting for review">
             <s-stack direction="block" gap="base">
               <s-stack
@@ -504,7 +532,7 @@ export default function Review() {
                 justifyContent="space-between"
               >
                 <s-text color="subdued">
-                  {`${data.total.toLocaleString("en")}${data.exact ? "" : "+"} ${data.total === 1 ? "product is" : "products are"} waiting${filtered ? " that match" : ""}.`}
+                  {`${total.toLocaleString("en")}${data.exact ? "" : "+"} ${total === 1 ? "product is" : "products are"} waiting${filtered ? " that match" : ""}.`}
                 </s-text>
                 {data.sources.length > 1 ? (
                   <Dropdown
@@ -581,14 +609,16 @@ export default function Review() {
                   </s-table-header>
                   <s-table-header listSlot="primary">Product</s-table-header>
                   <s-table-header listSlot="secondary">Source</s-table-header>
-                  <s-table-header listSlot="labeled">Translations</s-table-header>
+                  <s-table-header listSlot="labeled">
+                    Translations
+                  </s-table-header>
                   <s-table-header listSlot="labeled">Created</s-table-header>
                   <s-table-header listSlot="inline">
                     <s-text accessibilityVisibility="exclusive">Actions</s-text>
                   </s-table-header>
                 </s-table-header-row>
                 <s-table-body>
-                  {data.rows.map((row) => (
+                  {rows.map((row) => (
                     <ReviewRow
                       key={row.id}
                       row={row}
@@ -607,7 +637,7 @@ export default function Review() {
                   ))}
                 </s-table-body>
               </s-table>
-              {data.rows.length === 0 ? (
+              {rows.length === 0 ? (
                 <s-text color="subdued">No products match.</s-text>
               ) : null}
               <BulkBar

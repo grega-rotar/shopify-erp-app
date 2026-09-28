@@ -5,11 +5,22 @@ import { useEffect, useState } from "react";
  * page keeps, and the bar that shows while anything is ticked.
  */
 
-/** Which rows of the page are ticked. A new page of rows starts unticked. */
+/**
+ * Which rows of the page are ticked. When the rows change, a tick stays on
+ * a row that is still there and goes with a row that left: a page that
+ * re-reads itself live must not drop what someone is choosing, and a new
+ * page of rows starts unticked because none of its rows were ticked.
+ */
 export function useSelection(ids: readonly string[]) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const key = ids.join(",");
-  useEffect(() => setSelected(new Set()), [key]);
+  useEffect(() => {
+    const present = new Set(ids);
+    setSelected((current) => {
+      const kept = [...current].filter((id) => present.has(id));
+      return kept.length === current.size ? current : new Set(kept);
+    });
+  }, [key]);
   const all = ids.length > 0 && ids.every((id) => selected.has(id));
   return {
     selected,

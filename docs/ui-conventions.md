@@ -82,6 +82,24 @@ as a column of answers; the same three as paragraphs with buttons after them rea
 cards that happen to be adjacent. Rows stack under their label on a narrow card, by
 container query — a card is narrower than the window it is in.
 
+A switch is the exception to the column: its box (or, read, a tick or an empty circle)
+stands before its name, with its help under it at a reading measure, because a box across
+the card from its name is a hunt. Read and edited, a card is the same rows in the same
+order — Edit changes what is in the value place and nothing else, so the card never
+reflows (`SettingRows`, `web/components/source-editor`).
+
+## Live pages
+A page shows what is true now without a reload (`useLiveRevalidation`, `web/lib/live`):
+it re-reads its loader every 5 s while something it shows is happening (a run, a sync),
+every 30 s otherwise, never while the tab is hidden, and at once when the tab comes back.
+After an action whose effect the next read may not show yet — a run the portal has queued
+but not listed, a search index catching up — `useWatchWindow` keeps the fast rate for a
+while. What an action removed leaves the page at once rather than on the next read
+(approved products on the review page). A re-read keeps what the person is doing: ticks
+on rows that are still there, an open editor's typing. A page whose content cannot change
+once nothing is running (a finished run) passes `idleEveryMs: null`. Never a hand-rolled
+`setInterval` per route.
+
 ## Page header
 Every page that owns a background process opens with the same component:
 healthy / needs attention · when it last ran and the outcome · automatic or manual ·

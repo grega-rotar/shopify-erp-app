@@ -24,6 +24,7 @@ import {
   actorFromSession,
   principalFromSession,
 } from "~/web/lib/principal.server";
+import { useLiveRevalidation, useWatchWindow } from "~/web/lib/live";
 import { SOURCE_ROUTES, summarizeSources } from "~/web/lib/sources";
 import { loadSourcesShell, readPortal } from "~/web/lib/sources.server";
 
@@ -45,6 +46,8 @@ const DELETE_MODAL_ID = "delete-source";
 interface ActionResult {
   ok: boolean;
   message: string;
+  /** A run was asked for; the page watches until the portal lists it. */
+  started?: boolean;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -92,6 +95,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         ok: true,
         message: "Run started in the export portal.",
+        started: true,
       } satisfies ActionResult;
     }
 
@@ -135,17 +139,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-function useLivePolling(active: boolean) {
-  const revalidator = useRevalidator();
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") void revalidator.revalidate();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [active, revalidator]);
-}
-
 export default function Sources() {
   const { shell, portal, awaitingReview, note } =
     useLoaderData<typeof loader>();
@@ -154,7 +147,10 @@ export default function Sources() {
   const result = fetcher.data;
   const sources = portal.kind === "read" ? portal.data : [];
   const headline = summarizeSources(sources);
-  useLivePolling(headline.active > 0);
+  // A run just asked for may not be listed by the portal's first answer;
+  // the page watches closely until it is, then as long as it runs.
+  const [watching, watch] = useWatchWindow(30_000, headline.active > 0);
+  useLiveRevalidation({ active: headline.active > 0 || watching });
 
   const [pendingDelete, setPendingDelete] = useState<SourceSummary | null>(
     null,
@@ -163,6 +159,7 @@ export default function Sources() {
   useEffect(() => {
     if (!result?.ok) return;
     if (typeof shopify !== "undefined") shopify.toast.show(result.message);
+    if (result.started) watch();
   }, [result]);
 
   const submit = (body: Record<string, string>) =>

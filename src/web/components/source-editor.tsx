@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useFetcher } from "react-router";
 
 import type { Field, Source } from "~/domain/export-portal/contract";
@@ -115,15 +115,46 @@ export function useSourceEdit(
 
 const NAME_HELP = "How the source is listed here and in the export portal.";
 
-/** A switch read: on with a tick, off plainly. */
-function SwitchValue({ on }: { on: boolean }) {
-  return on ? (
-    <s-stack direction="inline" gap="small-400" alignItems="center">
-      <s-icon type="check-circle-filled" tone="success" size="small" />
-      <s-text>On</s-text>
-    </s-stack>
-  ) : (
-    <s-text color="subdued">Off</s-text>
+/**
+ * A switch as one row across the card: its state where the box goes, then
+ * its name and what it does. Read, the state is a mark (a filled tick, or
+ * an empty circle); edited, the design system's own checkbox stands in
+ * the same place with the same name and help, so its name toggles it and
+ * Edit moves nothing. The help keeps a reading measure, not the card's.
+ */
+function SwitchRow({
+  field,
+  on,
+  control,
+}: {
+  field: Field;
+  on: boolean;
+  control: ReactNode | null;
+}) {
+  return (
+    <s-box maxInlineSize="640px">
+      {control ?? (
+        <s-grid
+          gridTemplateColumns="auto 1fr"
+          gap="small-300"
+          alignItems="start"
+        >
+          <s-icon
+            type={on ? "check-circle-filled" : "circle"}
+            tone={on ? "success" : "neutral"}
+          />
+          <s-stack direction="block" gap="small-500">
+            <s-text>
+              {field.label}
+              <s-text accessibilityVisibility="exclusive">
+                {on ? ", on" : ", off"}
+              </s-text>
+            </s-text>
+            {field.help ? <s-text color="subdued">{field.help}</s-text> : null}
+          </s-stack>
+        </s-grid>
+      )}
+    </s-box>
   );
 }
 
@@ -189,6 +220,34 @@ function SettingRows({
       };
     }),
     ...shown.map((field): FactRow => {
+      if (field.type === "boolean")
+        return {
+          key: field.key,
+          label: field.label,
+          wide: true,
+          value: (
+            <SwitchRow
+              field={field}
+              on={
+                editing
+                  ? edit.state[field.key] === "true"
+                  : displayFieldValue(field, source.values).text === "On"
+              }
+              control={
+                editing ? (
+                  <PortalField
+                    field={field}
+                    stored={source.values[field.key] ?? null}
+                    value={edit.state[field.key] ?? ""}
+                    error={edit.errors[field.key]}
+                    onChange={(value) => edit.setField(field.key, value)}
+                    disabled={edit.busy}
+                  />
+                ) : null
+              }
+            />
+          ),
+        };
       if (editing)
         return {
           key: field.key,
@@ -211,12 +270,7 @@ function SettingRows({
         key: field.key,
         label: field.label,
         help: field.help,
-        value:
-          field.type === "boolean" ? (
-            <SwitchValue on={read.text === "On"} />
-          ) : (
-            read.text
-          ),
+        value: read.text,
         subdued: !read.set,
       };
     }),

@@ -35,6 +35,7 @@ import {
   actorFromSession,
   principalFromSession,
 } from "~/web/lib/principal.server";
+import { useLiveRevalidation, useWatchWindow } from "~/web/lib/live";
 import { redirectWithin } from "~/web/lib/redirects";
 import {
   SOURCE_ROUTES,
@@ -228,27 +229,27 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 };
 
-function useLivePolling(active: boolean) {
-  const revalidator = useRevalidator();
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") void revalidator.revalidate();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [active, revalidator]);
-}
-
 export default function SourcePage() {
   const { sourceId, portal, awaitingReview, note } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
   const result = fetcher.data;
+  const running =
+    portal.kind === "read" &&
+    (isRunActive(portal.data.source.lastRun) ||
+      portal.data.runs.some(isRunActive));
+  // A run just asked for may not be in the portal's first answer; the page
+  // watches closely until it is, then as long as it runs. The rest of the
+  // time it still re-reads now and then, so a scheduled run, a changed
+  // setting or a growing review count reaches it without a reload.
+  const [watching, watch] = useWatchWindow(30_000, running);
+  useLiveRevalidation({ active: running || watching });
 
   useEffect(() => {
     if (!result?.ok) return;
     if (typeof shopify !== "undefined") shopify.toast.show(result.message);
+    if (result.intent === "run") watch();
   }, [result]);
 
   if (portal.kind !== "read") {
@@ -307,7 +308,6 @@ function SourceOverview({
   const busyWith = (intent: string) =>
     busy && fetcher.formData?.get("intent") === intent;
   const running = isRunActive(source.lastRun) || runs.some(isRunActive);
-  useLivePolling(running);
 
   const submit = (body: Record<string, string>) =>
     void fetcher.submit(body, { method: "post" });

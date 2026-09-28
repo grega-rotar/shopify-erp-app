@@ -111,6 +111,11 @@ export interface FactRow {
   help?: string | null;
   value: ReactNode;
   subdued?: boolean;
+  /**
+   * The value is the whole row — a switch, which carries its own name
+   * beside its box rather than across the card from it.
+   */
+  wide?: boolean;
 }
 
 /**
@@ -129,31 +134,35 @@ export function FactList({ rows }: { rows: readonly FactRow[] }) {
         {rows.map((row, index) => (
           <s-stack key={row.key} direction="block" gap="small-200">
             {index > 0 ? <s-divider /> : null}
-            <s-grid
-              gridTemplateColumns="@container (inline-size <= 480px) 1fr, 'minmax(0, 16rem) minmax(0, 1fr)'"
-              gap="small-500 base"
-              alignItems="start"
-            >
-              {described ? (
-                // A list that explains its rows reads its names as names,
-                // with the explanation subdued under each.
-                <s-stack direction="block" gap="small-500">
-                  <s-text>{row.label}</s-text>
-                  {row.help ? (
-                    <s-text color="subdued">{row.help}</s-text>
-                  ) : null}
-                </s-stack>
-              ) : (
-                <s-text color="subdued">{row.label}</s-text>
-              )}
-              {typeof row.value === "string" ? (
-                <s-text {...(row.subdued ? { color: "subdued" } : {})}>
-                  {row.value}
-                </s-text>
-              ) : (
-                row.value
-              )}
-            </s-grid>
+            {row.wide ? (
+              row.value
+            ) : (
+              <s-grid
+                gridTemplateColumns="@container (inline-size <= 480px) 1fr, 'minmax(0, 16rem) minmax(0, 1fr)'"
+                gap="small-500 base"
+                alignItems="start"
+              >
+                {described ? (
+                  // A list that explains its rows reads its names as names,
+                  // with the explanation subdued under each.
+                  <s-stack direction="block" gap="small-500">
+                    <s-text>{row.label}</s-text>
+                    {row.help ? (
+                      <s-text color="subdued">{row.help}</s-text>
+                    ) : null}
+                  </s-stack>
+                ) : (
+                  <s-text color="subdued">{row.label}</s-text>
+                )}
+                {typeof row.value === "string" ? (
+                  <s-text {...(row.subdued ? { color: "subdued" } : {})}>
+                    {row.value}
+                  </s-text>
+                ) : (
+                  row.value
+                )}
+              </s-grid>
+            )}
           </s-stack>
         ))}
       </s-stack>

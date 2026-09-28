@@ -1,5 +1,4 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useEffect } from "react";
 import {
   useLoaderData,
   useRevalidator,
@@ -9,6 +8,7 @@ import {
 
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { RunsTable } from "~/web/components/source-overview";
+import { useLiveRevalidation } from "~/web/lib/live";
 import { principalFromSession } from "~/web/lib/principal.server";
 import { SOURCE_ROUTES, isRunActive } from "~/web/lib/sources";
 import { readPortal } from "~/web/lib/sources.server";
@@ -42,13 +42,8 @@ export default function SourceRunsPage() {
   const active =
     portal.kind === "read" && portal.data.runs.some((run) => isRunActive(run));
 
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") void revalidator.revalidate();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [active, revalidator]);
+  // New runs (scheduled, or started elsewhere) appear without a reload.
+  useLiveRevalidation({ active });
 
   if (portal.kind !== "read") {
     return (
