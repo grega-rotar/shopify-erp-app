@@ -56,7 +56,9 @@ nothing in the navigation is a database name:
 Home              /app                  operations dashboard (the app's name; no visible entry)
 Needs attention   /app/exceptions       everything that wants a person, from every area
 Orders            /app/orders           list, /app/orders/:id, /app/orders/settings
-                                        and /app/orders/settings/payments
+                                        and /app/orders/settings/payments; the entry is
+                                        left out while order transfer is off (`navFor`),
+                                        the pages stay reachable from MetaKocka and Settings
 Sales             /app/sales            sale campaigns; /app/sales/:id is the editor,
                                         /app/sales/:id/variants every variant it touches
 Metafields        /app/product-setup    lands on /app/product-setup/types/:typeId?, the tree of

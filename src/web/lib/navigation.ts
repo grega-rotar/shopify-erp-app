@@ -49,3 +49,18 @@ export const APP_NAV: readonly NavItem[] = [
   { href: "/app/sources", label: "Sources" },
   { href: "/app/settings", label: "Settings" },
 ];
+
+const ORDERS_HREF = "/app/orders";
+
+/**
+ * The navigation for one shop. With order transfer turned off, orders are
+ * received but none reach MetaKocka, and a top-level entry for them is a
+ * daily page that has nothing to do. The pages themselves stay: the
+ * MetaKocka page and Settings still open Orders, which is where the
+ * switch that turns transfer back on lives.
+ */
+export function navFor(shop: { transferOrders: boolean }): readonly NavItem[] {
+  return shop.transferOrders
+    ? APP_NAV
+    : APP_NAV.filter((item) => item.href !== ORDERS_HREF);
+}

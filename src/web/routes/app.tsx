@@ -2,14 +2,17 @@ import { useEffect } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Outlet,
+  useLoaderData,
   useRouteError,
   type HeadersFunction,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { getSalesOrderSettings } from "~/adapters/db/repositories/sales-order-setting.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { AppBridgeNavigation } from "~/web/components/app-bridge-navigation";
-import { APP_NAV } from "~/web/lib/navigation";
+import { navFor } from "~/web/lib/navigation";
+import { principalFromSession } from "~/web/lib/principal.server";
 import { describeStaleSessionError } from "~/web/lib/route-errors";
 
 /**
@@ -21,13 +24,20 @@ import { describeStaleSessionError } from "~/web/lib/route-errors";
  * redirects to the app's homepage": the app name in the admin nav is that
  * link. What the nav does carry is a hidden `rel="home"` entry naming `/app`
  * as the route that name opens — see `web/lib/navigation`.
+ *
+ * The entries depend on the shop: Orders is left out while order transfer
+ * is off. Saving the order settings is an action, and React Router reloads
+ * this loader after every action, so the menu follows the switch at once.
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+  const settings = await getSalesOrderSettings(principalFromSession(session));
+  return { nav: navFor(settings) };
 };
 
 export default function AppLayout() {
+  const { nav } = useLoaderData<typeof loader>();
+
   return (
     <>
       <AppBridgeNavigation />
@@ -39,7 +49,7 @@ export default function AppLayout() {
        * its entry's.
        */}
       <s-app-nav>
-        {APP_NAV.map((item) => (
+        {nav.map((item) => (
           <s-link
             key={item.href}
             href={item.href}

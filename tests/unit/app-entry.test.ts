@@ -2,7 +2,7 @@ import { RouterContextProvider, type LoaderFunctionArgs } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { appEntryFor, isEmbeddedRequest } from "~/web/lib/app-entry";
-import { APP_HOME, APP_NAV } from "~/web/lib/navigation";
+import { APP_HOME, APP_NAV, navFor } from "~/web/lib/navigation";
 import { loader as rootLoader } from "~/web/routes/_index";
 import { loader as loginLoader } from "~/web/routes/auth.login/route";
 
@@ -201,5 +201,15 @@ describe("the primary navigation", () => {
     expect(entryFor("/app/metakocka/locations/settings")).toBe("MetaKocka");
     expect(entryFor("/app/sources/connection")).toBe("Sources");
     expect(entryFor("/app/settings/taxes/rates")).toBe("Settings");
+  });
+
+  it("leaves Orders out while order transfer is off, and only Orders", () => {
+    const labels = (items: readonly { label: string }[]) =>
+      items.map((item) => item.label);
+
+    expect(navFor({ transferOrders: true })).toEqual(APP_NAV);
+    expect(labels(navFor({ transferOrders: false }))).toEqual(
+      labels(APP_NAV).filter((label) => label !== "Orders"),
+    );
   });
 });
