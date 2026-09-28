@@ -202,7 +202,7 @@ export const action = async ({
       by: actor,
     },
   });
-  await requestCoverageRefresh(principal, 60);
+  await requestCoverageRefresh(principal);
 
   if (form.initial !== "none" && form.aiEnabled && isConfigured()) {
     const sync = await startSync(principal, {

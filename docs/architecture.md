@@ -34,7 +34,7 @@ Caddy is the only production ingress and proxies to the web process.
 | Area            | Responsibility                                                                             | May depend on                   |
 | --------------- | ------------------------------------------------------------------------------------------ | ------------------------------- |
 | `src/domain/`   | Pure allocation, money, order-state, product-template, supply-default, tax, sale and attribute-schema rules | Domain only                     |
-| `src/adapters/` | External boundaries: Shopify, MetaKocka, Prisma, queues, crypto, logs, Sentry, environment, OpenAI (`adapters/ai/`); `adapters/sales/` and `adapters/translations/` are service layers both web and jobs call | Domain |
+| `src/adapters/` | External boundaries: Shopify, MetaKocka, Prisma, queues, crypto, logs, Sentry, environment, OpenAI (`adapters/ai/`), the export portal (`adapters/export-portal/`); `adapters/sales/` and `adapters/translations/` are service layers both web and jobs call | Domain |
 | `src/jobs/`     | Application orchestration and pg-boss handlers                                             | Domain and adapters             |
 | `src/web/`      | React Router loaders/actions, webhook endpoints, and embedded UI                           | Domain and adapters, never jobs |
 
@@ -44,7 +44,7 @@ randomness; callers inject time and inputs.
 
 ## Merchant-facing shape
 
-Six visible entries in `s-app-nav`, each a job rather than a table. Every
+Seven visible entries in `s-app-nav`, each a job rather than a table. Every
 settings page lives with the thing it configures, so nothing in the navigation
 is a database name:
 
@@ -59,6 +59,9 @@ Metafields        /app/product-setup    lands on /app/product-setup/types/:typeI
 Translations      /app/translations     the store's languages (docs/translations.md); its own
                                         navigation reaches /add, /languages/:locale, /editor,
                                         /translate, /syncs (/:syncId), /glossary and /usage
+Sources           /app/sources          what the export portal pushes into the store, a view onto
+                                        the portal (docs/sources.md); /new, /:sourceId,
+                                        /:sourceId/runs/:runId and /connection (the API key)
 MetaKocka         /app/metakocka        the integration's front door: how each side is
                                         doing, opening onto
   Orders          /app/orders           list, and /app/orders/settings
@@ -566,6 +569,32 @@ by a person and is protected from then on, and a translation Shopify held
 before this app is treated as human work. Nothing of Shopify's — locales,
 publication, original or translated strings — is stored.
 
+### Sources
+
+What the export portal — a separate internal product with its own Shopify
+app — pushes into the store (stock, products, prices from a catalogue export
+or a brand feed, per location), configured from here over its API with a
+per-store key (`docs/sources.md`). Nothing about a
+source is stored in this app. The contract is pure Zod in
+`src/domain/export-portal/contract.ts`, the form rules for the portal's
+schema-described fields in `fields.ts`; the client, failure classification
+and the "a client for this shop, or why not" service are
+`src/adapters/export-portal/`; the key at rest is
+`export-portal-connection.server.ts`; screens under `app.sources.*`.
+
+```text
+/app/sources … ──GET /api/v1/sources──▶ export portal (its own tables, its own Shopify install)
+/app/sources/:id save ──PATCH (only what changed)──▶ portal validates, answers per field
+Run now ──POST …/runs──▶ portal queues; the page polls while a run is active
+```
+
+The one deliberate exception to "no page loader waits on an integration":
+these pages call the portal as they open, with a short timeout and every
+failure rendered as a state, because the area is a view and nothing here
+is cached. The safety boundary is in the portal: every call carries the
+key and the shop domain, and the portal refuses a key not issued for that
+shop.
+
 ### Catalogue and product names
 
 - `sync-catalogue` reads Shopify variants and MetaKocka products into the SKU
@@ -632,6 +661,8 @@ history under `prisma/migrations/`. Major groups are:
   operation in flight;
 - attributes: `AttributeSchema`, the whole planned schema as one JSON
   document per shop with a `revision` for conditional writes;
+- sources: `ExportPortalConnection`, the store's export portal API key,
+  encrypted, with the tenant it verified as and when;
 - translations: `TranslationLanguage` (the engine's settings per locale),
   `TranslationCoverage` (a counted cache), `TranslationGlossaryTerm`,
   `TranslationSourceOverride`, `TranslationOwnership` (what this app wrote,
@@ -659,6 +690,7 @@ enforcement gap is tracked in `docs/project-status.md`.
 | Sale pricing, rule or conflict rule | `src/domain/sales/`; the write path is `src/adapters/sales/writer.server.ts`; screens under `app.sales.*` |
 | Attribute schema rule or screen | `src/domain/attributes/`, then `web/lib/attributes.server.ts`; screens under `app.product-setup.*` |
 | Translation rule, prompt or price | `src/domain/translations/`; the engine is `src/adapters/translations/engine.server.ts`, the provider `src/adapters/ai/openai.server.ts`; screens under `app.translations.*` |
+| Export portal contract or a Sources screen | `src/domain/export-portal/contract.ts` (and `docs/sources.md` § The contract, which the portal implements); the client `src/adapters/export-portal/client.server.ts`; screens under `app.sources.*` |
 | Background workflow            | Queue definition, `src/jobs/handlers/`, then worker registration             |
 | Embedded screen or form        | `src/web/routes/` with shared UI in `src/web/components/` and `src/web/lib/` |
 | What counts as configured      | `src/domain/readiness/`, then `readiness.server.ts` for the facts          |

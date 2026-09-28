@@ -11,6 +11,7 @@ import {
 
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { requestCoverageRefresh } from "~/adapters/translations/syncs.server";
+import { CoverageCount } from "~/web/components/coverage-count";
 import { describeLanguage } from "~/domain/translations/languages";
 import { LocaleFlag } from "~/web/components/locale-flag";
 import { Columns } from "~/web/components/page-columns";
@@ -57,11 +58,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(formData.get("intent") ?? "");
 
   if (intent === "refresh-coverage") {
-    const jobId = await requestCoverageRefresh(principal, 60);
+    const jobId = await requestCoverageRefresh(principal);
     return {
       ok: true,
       message: jobId
-        ? "Counting translations across the store. This takes a few minutes for a large catalogue."
+        ? "Counting translations across the store."
         : "Translations are already being counted.",
     };
   }
@@ -83,7 +84,8 @@ export default function Languages() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const result = fetcher.data;
-  const counting = data.kind === "read" && data.coverageCount.counting;
+  const counting =
+    data.kind === "read" && data.coverageCount.state === "counting";
   useLivePolling(data.kind === "read" && (data.activeSyncs > 0 || counting));
 
   useEffect(() => {
@@ -296,45 +298,17 @@ export default function Languages() {
                 </s-table>
               )}
 
-              {data.coverageCount.failed ? (
-                <s-banner tone="critical" heading="Coverage could not be counted">
-                  <s-paragraph>
-                    {`The count started ${formatDateTime(data.coverageCount.failed.at)} failed: ${data.coverageCount.failed.reason}`}
-                  </s-paragraph>
-                </s-banner>
-              ) : null}
-
-              <s-grid
-                gridTemplateColumns="@container (inline-size <= 560px) 1fr, 1fr auto"
-                gap="base"
-                alignItems="center"
-              >
-                <s-text color="subdued">
-                  {counting
-                    ? "Counting translations across the store. This takes a few minutes for a large catalogue; the table updates when it is done."
-                    : data.coverageAt
-                      ? `Coverage counted ${formatDateTime(data.coverageAt)} across every translatable field. It is recounted after each sync and nightly.`
-                      : "Coverage has not been counted yet. Count it once to see what each language is missing."}
-                </s-text>
-                <s-button
-                  type="button"
-                  onClick={() =>
-                    fetcher.submit(
-                      { intent: "refresh-coverage" },
-                      { method: "post" },
-                    )
-                  }
-                  {...(fetcher.state !== "idle" || counting
-                    ? { disabled: true, loading: true }
-                    : {})}
-                >
-                  {counting
-                    ? "Counting"
-                    : data.coverageAt
-                      ? "Count again"
-                      : "Count coverage"}
-                </s-button>
-              </s-grid>
+              <CoverageCount
+                progress={data.coverageCount}
+                countedAt={data.coverageAt}
+                busy={fetcher.state !== "idle"}
+                onCount={() =>
+                  fetcher.submit(
+                    { intent: "refresh-coverage" },
+                    { method: "post" },
+                  )
+                }
+              />
             </s-stack>
           </s-section>
         ) : null}

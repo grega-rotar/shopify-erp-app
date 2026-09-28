@@ -97,6 +97,22 @@ export function translationRemoveKey(shopDomain: string, locale: string): string
   return `translation-remove:${shopDomain}:${locale}`;
 }
 
+/**
+ * A removal of AI translations after a settings change, one per shop,
+ * language and scope: a second change while the first runs is its own job,
+ * the same change twice is one.
+ */
+export function translationRemoveAiKey(
+  shopDomain: string,
+  locale: string,
+  scope: readonly { type: string; keys: readonly string[] | null }[],
+): string {
+  const signature = scope
+    .map((entry) => `${entry.type}=${entry.keys?.join(",") ?? "*"}`)
+    .join(";");
+  return `translation-remove-ai:${shopDomain}:${locale}:${signature}`;
+}
+
 /** At most one store profile build waiting per shop. */
 export function translationProfileKey(shopDomain: string): string {
   return `translation-profile:${shopDomain}`;

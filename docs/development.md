@@ -106,6 +106,7 @@ HMAC verification and can look like an application regression.
 | `SHOP_CUSTOM_DOMAIN`                                |       no | Custom shop domain accepted by Shopify auth                          |
 | `OPENAI_API_KEY`                                    |       no | The one server-side key AI translation uses (docs/translations.md § The provider). Never shown, stored or logged; blank disables AI translation and every other feature still works |
 | `OPENAI_TRANSLATION_MODEL`                          |       no | The OpenAI model to translate with; defaults to `gpt-4.1-mini`. Costs are estimated only for models in `src/domain/translations/pricing.ts` |
+| `EXPORT_PORTAL_URL`                                 |       no | The export portal's origin, for the Sources area (docs/sources.md). Per deployment; the per-store API key is pasted into the app. Blank leaves the Sources pages saying the portal is not configured; everything else works |
 | `SENTRY_DSN`                                        |       no | Error reporting; blank disables Sentry                               |
 | `SENTRY_ENVIRONMENT`                                |       no | Environment label sent to Sentry                                     |
 | `LOG_LEVEL`                                         |       no | pino level; defaults to `info`                                       |

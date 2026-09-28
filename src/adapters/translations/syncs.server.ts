@@ -1,24 +1,35 @@
+import { randomUUID } from "node:crypto";
+
 import type { Prisma } from "@prisma/client";
 
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
+  getCoverageScan,
+  isScanActive,
+  startCoverageScan,
+  type CoverageScan,
+} from "~/adapters/db/repositories/translation-coverage-scan.server";
+import {
   appendToCollectingSync,
   createSync,
+  getCoverage,
   recordLanguageSync,
   type Sync,
 } from "~/adapters/db/repositories/translations.server";
-import {
-  enqueue,
-  enqueueThrottled,
-  latestJobForKey,
-} from "~/adapters/queue/boss.server";
+import { enqueue, enqueueThrottled } from "~/adapters/queue/boss.server";
 import {
   QUEUES,
   translationCoverageKey,
   translationProfileKey,
   translationSyncKey,
 } from "~/adapters/queue/queues";
-import type { ResourceType, SyncMode } from "~/domain/translations/types";
+import {
+  ALL_RESOURCE_TYPES,
+  RESOURCE_TYPE_LABEL,
+  isResourceType,
+  type ResourceType,
+  type SyncMode,
+} from "~/domain/translations/types";
 import type { Principal } from "~/domain/types";
 
 /**
@@ -128,47 +139,110 @@ export async function collectChangedResource(
   return { sync, opened: true, added: true };
 }
 
-/** Asks for the coverage cache to be re-read; null when one is already pending. */
+/**
+ * Starts a coverage count (docs/translations.md § Coverage) and returns its
+ * run id, or null when one is already running and still moving — a count
+ * asked for while another runs would only restart it, and the one running
+ * sees most of what changed. A count that stopped (no pass for
+ * `SCAN_STALL_MS`) is replaced.
+ */
 export async function requestCoverageRefresh(
   principal: Principal,
-  windowSeconds = 300,
 ): Promise<string | null> {
-  return enqueueThrottled(
-    QUEUES.translationCoverage,
-    { shopDomain: principal.shopDomain },
-    translationCoverageKey(principal.shopDomain),
-    windowSeconds,
+  const now = new Date();
+  const scan = await getCoverageScan(principal);
+  if (isScanActive(scan, now)) return null;
+
+  // What the last count saw per type, as the denominator of a percentage.
+  const coverage = await getCoverage(principal);
+  const perType = new Map<string, number>();
+  for (const row of coverage.rows)
+    perType.set(row.resourceType, Math.max(perType.get(row.resourceType) ?? 0, row.resources));
+  const expected = [...perType.values()].reduce((a, b) => a + b, 0);
+
+  const runId = randomUUID();
+  await startCoverageScan(
+    principal,
+    {
+      runId,
+      typesTotal: ALL_RESOURCE_TYPES.length,
+      expectedResources: expected > 0 ? expected : null,
+    },
+    now,
   );
+  await enqueue(
+    QUEUES.translationCoverage,
+    { shopDomain: principal.shopDomain, runId },
+    { singletonKey: `${translationCoverageKey(principal.shopDomain)}:${runId}` },
+  );
+  return runId;
 }
 
 /**
- * What became of the last coverage count (docs/translations.md § Coverage):
- * one is waiting or running, or the last one failed and the cache is older
- * than that failure. The Languages page shows both; without them a count
- * that failed on the worker looks like a button that does nothing.
+ * Where the coverage count stands, for a page: counting (with how far),
+ * stopped, finished with content Shopify would not read, or nothing to say.
+ * Serialisable, so loaders hand it over as is.
  */
-export interface CoverageCountState {
-  counting: boolean;
-  failed: { at: Date; reason: string } | null;
+export interface CoverageProgress {
+  state: "idle" | "counting" | "stalled" | "problem";
+  /** 0–100 while counting: resources against the last count's, or types when there was none. */
+  percent: number | null;
+  typesDone: number;
+  typesTotal: number;
+  /** What is being read now, as the merchant calls it. */
+  reading: string | null;
+  resourcesRead: number;
+  expectedResources: number | null;
+  startedAt: string | null;
+  /** Why it stopped or what could not be read. */
+  message: string | null;
 }
 
-export async function coverageCountState(
-  principal: Principal,
-  countedAt: Date | null,
-): Promise<CoverageCountState> {
-  const job = await latestJobForKey(
-    QUEUES.translationCoverage,
-    translationCoverageKey(principal.shopDomain),
-  );
-  if (!job) return { counting: false, failed: null };
-  const counting =
-    job.state === "created" || job.state === "retry" || job.state === "active";
-  const failedAt = job.completedOn ?? job.createdOn;
-  const failed =
-    job.state === "failed" && (!countedAt || failedAt > countedAt)
-      ? { at: failedAt, reason: job.error ?? "The job failed without a reason." }
-      : null;
-  return { counting, failed };
+export function describeCoverageScan(
+  scan: CoverageScan | null,
+  now: Date,
+): CoverageProgress {
+  const base = {
+    percent: null,
+    typesDone: scan?.typesDone ?? 0,
+    typesTotal: scan?.typesTotal ?? ALL_RESOURCE_TYPES.length,
+    reading: null,
+    resourcesRead: scan?.resourcesRead ?? 0,
+    expectedResources: scan?.expectedResources ?? null,
+    startedAt: scan?.startedAt.toISOString() ?? null,
+    message: null,
+  };
+  if (!scan) return { state: "idle", ...base };
+  if (scan.status === "running") {
+    const label =
+      scan.currentType && isResourceType(scan.currentType)
+        ? RESOURCE_TYPE_LABEL[scan.currentType]
+        : null;
+    if (!isScanActive(scan, now))
+      return {
+        state: "stalled",
+        ...base,
+        reading: label,
+        message: `The count stopped${label ? ` while reading ${label.toLowerCase()}s` : ""} after ${scan.resourcesRead.toLocaleString("en")} resources. Count again to start over.`,
+      };
+    const byResources =
+      scan.expectedResources && scan.expectedResources > 0
+        ? (scan.resourcesRead / scan.expectedResources) * 100
+        : null;
+    const byTypes = scan.typesTotal > 0 ? (scan.typesDone / scan.typesTotal) * 100 : 0;
+    return {
+      state: "counting",
+      ...base,
+      reading: label,
+      percent: Math.max(0, Math.min(99, Math.floor(byResources ?? byTypes))),
+    };
+  }
+  if (scan.error) return { state: "problem", ...base, message: scan.error };
+  return { state: "idle", ...base };
+}
+
+export async function coverageProgress(principal: Principal): Promise<CoverageProgress> {
+  return describeCoverageScan(await getCoverageScan(principal), new Date());
 }
 
 /**

@@ -276,7 +276,10 @@ async function complete(
       detail: { syncId: sync.id, failedFields: fresh.failedFields },
     });
   }
-  await requestCoverageRefresh(principal, 60);
+  // A collected sync is a handful of products from webhooks, all day long;
+  // recounting the whole store after each kept a count running for ever.
+  // The nightly count covers them.
+  if (!collected) await requestCoverageRefresh(principal);
 }
 
 async function fail(

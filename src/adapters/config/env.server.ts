@@ -43,6 +43,26 @@ const envSchema = z.object({
       value && value.trim() !== "" ? value.trim() : "gpt-4.1-mini",
     ),
 
+  /**
+   * The export portal's origin, for the Sources area (docs/sources.md). One
+   * per deployment because the portal is an internal tool with one address;
+   * the per-shop part of the connection is the API key, which is stored
+   * encrypted in `export_portal_connection`. Optional: without it the Sources
+   * pages say the portal is not configured and nothing else changes. Held as
+   * an origin here so a merchant never types a URL this server will call.
+   */
+  EXPORT_PORTAL_URL: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.trim() !== "" ? value.trim() : undefined))
+    .pipe(
+      z
+        .string()
+        .url("EXPORT_PORTAL_URL must be an absolute URL")
+        .transform((value) => value.replace(/\/+$/, ""))
+        .optional(),
+    ),
+
   SENTRY_DSN: z.string().optional(),
   SENTRY_ENVIRONMENT: z.string().default("development"),
 

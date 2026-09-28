@@ -88,7 +88,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(formData.get("intent") ?? "");
 
   if (intent === "refresh-coverage") {
-    const jobId = await requestCoverageRefresh(principal, 60);
+    const jobId = await requestCoverageRefresh(principal);
     return {
       ok: true,
       message: jobId

@@ -19,6 +19,7 @@ probe evidence belong in `docs/metakocka-verification.md`.
 | Fulfilment-order placement               | Planned app → Shopify       | Queue exists; no consumer yet                               |
 | Tracking                                 | Planned MetaKocka → Shopify | Blocked: verified sales-order payload has no tracking field |
 | Store languages and translations         | Shopify ↔ app ↔ OpenAI      | `docs/translations.md`: Shopify owns locales and every string; the app owns AI settings, ownership and usage; OpenAI only computes |
+| Product sources pushed into the store    | app → export portal (config only) | `docs/sources.md`: the export portal owns every source and run and writes the store itself; this app owns only the API key and configures over the portal's API |
 
 Missing directions and product decisions are tracked in
 `docs/project-status.md` rather than implied here.

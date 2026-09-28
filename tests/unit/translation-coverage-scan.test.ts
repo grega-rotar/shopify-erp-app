@@ -29,7 +29,7 @@ vi.mock("~/adapters/shopify/translations", () => ({
   },
 }));
 
-const { scanCoverage, describeUnread } =
+const { scanCoverage, describeUnread, readCoverageChunk } =
   await import("~/adapters/translations/coverage.server");
 
 function page(
@@ -136,5 +136,38 @@ describe("scanCoverage", () => {
     await expect(
       scanCoverage({} as never, { types: ["PRODUCT"], locales: [] }),
     ).resolves.toEqual({ rows: [], unread: [] });
+  });
+});
+
+describe("readCoverageChunk", () => {
+  it("stops after its pages and carries the counts to the next pass", async () => {
+    pages.clear();
+    pages.set("PRODUCT", [
+      page("PRODUCT", ["p1", "p2"], true, ["p1"]),
+      page("PRODUCT", ["p3"], false),
+    ]);
+    const admin = {} as Parameters<typeof readCoverageChunk>[0];
+    const first = await readCoverageChunk(admin, {
+      type: "PRODUCT",
+      after: null,
+      locales: ["sl"],
+      carried: [],
+      maxPages: 1,
+      pageSize: 2,
+    });
+    expect(first).toMatchObject({ read: 2, done: false, after: "PRODUCT:p2" });
+
+    const second = await readCoverageChunk(admin, {
+      type: "PRODUCT",
+      after: first.after,
+      locales: ["sl"],
+      carried: first.rows,
+      maxPages: 1,
+      pageSize: 2,
+    });
+    expect(second).toMatchObject({ read: 1, done: true, after: null });
+    expect(second.rows).toEqual([
+      expect.objectContaining({ locale: "sl", resourceType: "PRODUCT", resources: 3, fields: 3, translated: 1, missing: 2 }),
+    ]);
   });
 });

@@ -7,7 +7,6 @@ import {
   QUEUES,
   catalogueSnapshotKey,
   inventorySyncKey,
-  translationCoverageKey,
 } from "~/adapters/queue/queues";
 import {
   abandonStaleSyncs,
@@ -16,7 +15,10 @@ import {
 } from "~/adapters/db/repositories/translations.server";
 import { getLogger } from "~/adapters/observability/logger.server";
 import { captureException } from "~/adapters/observability/sentry.server";
-import { startSync } from "~/adapters/translations/syncs.server";
+import {
+  requestCoverageRefresh,
+  startSync,
+} from "~/adapters/translations/syncs.server";
 import {
   typesForGroups,
   type ContentGroup,
@@ -189,12 +191,13 @@ async function fanOutTranslations(cadence: Cadence): Promise<void> {
     select: { domain: true },
   });
   for (const shop of shops) {
-    await enqueueThrottled(
-      QUEUES.translationCoverage,
-      { shopDomain: shop.domain },
-      translationCoverageKey(shop.domain),
-      20 * 60 * 60,
-    );
+    try {
+      // No-op while a count is already running for the shop.
+      await requestCoverageRefresh(serviceToken(shop.domain, "scheduled-tick"));
+    } catch (error) {
+      log.error({ err: error, shop: shop.domain }, "Could not start the nightly coverage count");
+      captureException(error, { shop: shop.domain, cadence });
+    }
   }
 }
 

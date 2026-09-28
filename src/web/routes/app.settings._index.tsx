@@ -78,6 +78,12 @@ const LINKS: SettingsLink[] = [
       "Matching the two catalogues by SKU, and the optional writes into the MetaKocka catalogue.",
     href: "/app/products/sync",
   },
+  {
+    title: "Export portal connection",
+    description:
+      "The API key that lets Sources configure and run what the export portal pushes into the store. Store owner only.",
+    href: "/app/sources/connection",
+  },
 ];
 
 export default function Settings() {

@@ -116,6 +116,46 @@ export function keptKeys(
 }
 
 /**
+ * What a resource type loses when a language's settings change: every key
+ * (`null`), or the listed ones.
+ */
+export interface RemovalScope {
+  type: ResourceType;
+  keys: string[] | null;
+}
+
+/**
+ * The AI translations a settings change takes away (docs/translations.md §
+ * Switched off): a content group taken out of scope loses its types whole,
+ * a field newly kept in the original loses that field. Nothing is taken
+ * away for what was added. One entry per type, in `ALL_RESOURCE_TYPES`
+ * order, so the same change always names the same scope.
+ */
+export function removalScope(
+  before: Pick<LanguageSettings, "contentScope" | "keepOriginal">,
+  after: Pick<LanguageSettings, "contentScope" | "keepOriginal">,
+): RemovalScope[] {
+  const whole = new Set<ResourceType>();
+  for (const group of before.contentScope)
+    if (!after.contentScope.includes(group))
+      for (const type of CONTENT_GROUPS[group].types) whole.add(type);
+  const keys = new Map<ResourceType, Set<string>>();
+  for (const choice of after.keepOriginal) {
+    if (before.keepOriginal.includes(choice)) continue;
+    for (const [type, fields] of Object.entries(KEEP_ORIGINAL[choice].fields)) {
+      const set = keys.get(type as ResourceType) ?? new Set<string>();
+      for (const key of fields ?? []) set.add(key);
+      keys.set(type as ResourceType, set);
+    }
+  }
+  return ALL_RESOURCE_TYPES.flatMap((type): RemovalScope[] => {
+    if (whole.has(type)) return [{ type, keys: null }];
+    const set = keys.get(type);
+    return set ? [{ type, keys: [...set].sort() }] : [];
+  });
+}
+
+/**
  * Shopify's `TranslatableResourceType` values this app works on, and what
  * a merchant calls each group. The theme, email template and app-embed
  * types are deliberately absent: their keys are dynamic and their strings

@@ -84,7 +84,36 @@ Completed work belongs in Git history, not in this file.
   index, activation idempotency, the one-writer-per-location rule, the tax
   tables and the tax migration's backfill
 
+- A Sources area: what the export portal pushes into the store, configured
+  and run from here over the portal's API with a per-store key, with the
+  portal describing its own forms (`docs/sources.md`); the portal side is
+  built too (`t4a-partner-portal-api/docs/sources-api.md`)
+
 ## Product and integration gaps
+
+### T-27 — Sources: built on both sides, not yet run against the real store
+
+Both sides of `docs/sources.md` § The contract exist as of 2026-09-22: this
+app against recorded replies, the portal (`t4a-partner-portal-api`,
+`/api/v1`, `docs/sources-api.md` there) against an end-to-end smoke test
+with Shopify stubbed. Decisions taken there: a key is bound to one connected
+store and a mismatch is a 403; a store whose portal connection is not active
+answers 409 to everything; a run while one is going is a 409; `health` is
+computed by the portal; there are no `secret` fields yet.
+
+What remains is operational: deploy the portal API with the new routes, set
+`EXPORT_PORTAL_URL` here to the portal **API** origin, mint a key for the
+Recharge store on the portal's Shopify page under *API access*, paste it
+into `/app/sources/connection`, and watch the first real per-source run.
+Known limits stay as listed in `docs/sources.md` § Known limits.
+
+**Review before publish** (2026-09-27): this app's side is built — the queue
+at `/app/sources/review`, translate and approve from it, counts on the
+Sources pages (`docs/sources.md` § Review before publish). The portal's side
+is not: a per-source setting for new products (publish / wait for review),
+creating them as drafts tagged `awaiting-review` and `portal-source:<id>`,
+and never writing `status` on a later update. Not yet tried against the
+store.
 
 ### T-05/T-06 — Shipping and discounts: representable, not yet configured
 

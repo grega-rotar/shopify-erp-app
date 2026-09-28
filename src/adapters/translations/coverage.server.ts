@@ -3,6 +3,7 @@ import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { readTranslatableResources } from "~/adapters/shopify/translations";
 import {
   accumulateResource,
+  coverageFrom,
   coverageRows,
   newCoverage,
 } from "~/domain/translations/coverage";
@@ -86,6 +87,57 @@ export async function scanCoverage(
     onProgress?.({ type, resources: seen });
   }
   return { rows: coverageRows(acc), unread };
+}
+
+/**
+ * A few pages of one type, carrying on from what earlier passes counted
+ * (`carried`) at the cursor they stopped at. One pass of the chunked count:
+ * short enough that a job never outlives its expiry, whatever the store's
+ * size. Throws when Shopify will not read the type; the caller counts that
+ * type as unread and moves on.
+ */
+export async function readCoverageChunk(
+  admin: AdminApiContext,
+  input: {
+    type: ResourceType;
+    after: string | null;
+    locales: readonly string[];
+    carried: readonly CoverageRow[];
+    keepOriginal?: ReadonlyMap<string, readonly KeepOriginal[]>;
+    maxPages: number;
+    pageSize: number;
+  },
+): Promise<{
+  rows: CoverageRow[];
+  read: number;
+  after: string | null;
+  done: boolean;
+}> {
+  const acc = coverageFrom(input.carried);
+  let after = input.after;
+  let read = 0;
+  for (let pageNumber = 0; pageNumber < input.maxPages; pageNumber += 1) {
+    const page = await readTranslatableResources(admin, {
+      type: input.type,
+      first: input.pageSize,
+      after,
+      locales: input.locales,
+    });
+    for (const resource of page.resources)
+      accumulateResource(acc, {
+        resourceType: input.type,
+        fields: resource.fields,
+        translations: resource.translations,
+        locales: input.locales,
+        keep: (locale) =>
+          keptKeys(input.keepOriginal?.get(locale) ?? [], input.type),
+      });
+    read += page.resources.length;
+    if (!page.hasNextPage || !page.endCursor)
+      return { rows: coverageRows(acc), read, after: null, done: true };
+    after = page.endCursor;
+  }
+  return { rows: coverageRows(acc), read, after, done: false };
 }
 
 /** One sentence naming what could not be read, for a job's failure and the page. */

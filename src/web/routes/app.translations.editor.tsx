@@ -19,6 +19,7 @@ import {
 } from "~/adapters/db/repositories/translation-intelligence.server";
 import {
   forgetOwnership,
+  getLanguageSettings,
   getSourceOverride,
   listOwnership,
   recordOwnership,
@@ -58,6 +59,7 @@ import {
   fieldLabel,
   groupForType,
   isResourceType,
+  keptKeys,
   resourceTypeOfId,
   type FieldState,
   type OwnershipRecord,
@@ -211,10 +213,16 @@ interface StateCounts {
   existing: number;
 }
 
+/**
+ * A field the language keeps in the original (docs/translations.md § Kept
+ * in the original language) is not counted, as coverage does not count it:
+ * it is not missing, it is meant to read as the source.
+ */
 function countStates(
   resource: TranslatableResource,
   locale: string,
   ownership: readonly OwnershipRecord[],
+  kept: ReadonlySet<string>,
 ): StateCounts {
   const counts: StateCounts = {
     missing: 0,
@@ -230,7 +238,7 @@ function countStates(
     ownership.filter((r) => r.locale === locale).map((r) => [r.key, r]),
   );
   for (const field of resource.fields) {
-    if (!isTranslatableField(field)) continue;
+    if (!isTranslatableField(field) || kept.has(field.key)) continue;
     const state = classifyField(
       translations.get(field.key),
       records.get(field.key),
@@ -249,6 +257,7 @@ function describeSelected(
   primaryLocale: string,
   ownership: readonly OwnershipRecord[],
   override: { sourceLocale: string; detectedLocale: string | null } | null,
+  kept: ReadonlySet<string>,
 ) {
   const translations = new Map(
     (resource.translations.get(locale) ?? []).map((t) => [t.key, t]),
@@ -279,6 +288,8 @@ function describeSelected(
           outdated: translation?.outdated ?? false,
           updatedAt: translation?.updatedAt ?? null,
           prose: isTranslatableField(field),
+          /** The language keeps this field in the original: nothing is missing. */
+          kept: kept.has(field.key),
         };
       }),
   };
@@ -327,25 +338,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // The small read: one resource for the dialog, nothing for the index.
   if (url.searchParams.get("part") === "resource") {
     if (!selectedId) return { kind: "resource" as const, selected: null };
-    const [read, ownership, override] = await Promise.all([
+    const [read, ownership, override, settings] = await Promise.all([
       readTranslatableResourcesByIds(admin, {
         ids: [selectedId],
         locales: [locale],
       }),
       listOwnership(principal, [selectedId]),
       getSourceOverride(principal, selectedId),
+      getLanguageSettings(principal, locale),
     ]);
     const resource = read[0];
+    const resourceType = selectedType(url, selectedId, type);
     return {
       kind: "resource" as const,
       selected: resource
         ? describeSelected(
             resource,
-            selectedType(url, selectedId, type),
+            resourceType,
             locale,
             primary.locale,
             ownership.get(selectedId) ?? [],
             override,
+            keptKeys(settings.keepOriginal, resourceType),
           )
         : null,
     };
@@ -363,6 +377,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let endCursor: string | null = null;
   let scanned = 0;
   const ownershipByResource = new Map<string, OwnershipRecord[]>();
+  const { keepOriginal } = await getLanguageSettings(principal, locale);
 
   const take = async (
     resources: TranslatableResource[],
@@ -382,6 +397,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         resource,
         locale,
         owned.get(resource.resourceId) ?? [],
+        keptKeys(keepOriginal, resourceType),
       ),
       depth: 0,
       parentId: null,
@@ -414,6 +430,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               resource,
               locale,
               owned.get(node.resourceId ?? "") ?? [],
+              keptKeys(keepOriginal, node.kind),
             )
           : NO_STATES,
         depth: node.depth,
@@ -560,6 +577,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           primary.locale,
           ownershipByResource.get(selectedId) ?? [],
           override,
+          keptKeys(
+            keepOriginal,
+            listedSelected?.type ?? selectedType(url, selectedId, type),
+          ),
         )
       : null;
 
@@ -1860,7 +1881,8 @@ function ResourceEditor({
     data.aiConfigured &&
     selected.sourceLocale !== data.locale;
   const needsWork = selected.fields.filter(
-    (f) => f.prose && (f.state === "missing" || f.state === "outdated"),
+    (f) =>
+      f.prose && !f.kept && (f.state === "missing" || f.state === "outdated"),
   ).length;
   const canMove = !busy && !dirty;
   const fullField = full
@@ -1885,7 +1907,7 @@ function ResourceEditor({
             All fields
           </s-button>
           <s-text type="strong">{fullField.label}</s-text>
-          <FieldStateBadge state={fullField.state} />
+          <FieldStateBadge state={fullField.state} kept={fullField.kept} />
         </s-stack>
         <FieldRow
           key={fullField.key}
@@ -2153,7 +2175,7 @@ function FieldRow({
         <div style={HEADER_ROW}>
           <s-stack direction="inline" gap="small-300" alignItems="center">
             <s-text type="strong">{field.label}</s-text>
-            <FieldStateBadge state={field.state} />
+            <FieldStateBadge state={field.state} kept={field.kept} />
             <s-text color="subdued">{localeLabel(sourceLocale)}</s-text>
           </s-stack>
         </div>
@@ -2294,9 +2316,22 @@ function FieldRow({
 
 /**
  * Colour marks what needs a person: missing and outdated. Who wrote an
- * existing translation is information, not an alarm.
+ * existing translation is information, not an alarm. A field the language
+ * keeps in the original needs nobody, whatever Shopify holds for it.
  */
-function FieldStateBadge({ state }: { state: FieldState }) {
+function FieldStateBadge({
+  state,
+  kept,
+}: {
+  state: FieldState;
+  kept: boolean;
+}) {
+  if (kept)
+    return (
+      <s-badge tone="neutral" size="base">
+        Kept in original
+      </s-badge>
+    );
   const tone =
     state === "missing"
       ? ("warning" as const)

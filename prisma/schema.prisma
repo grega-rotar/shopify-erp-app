@@ -111,49 +111,51 @@ model Shop {
   ianaTimezone             String?   @map("iana_timezone")
   currencyCode             String?   @map("currency_code")
 
-  eventLogs              EventLog[]
-  metakockaCredential    MetakockaCredential?
-  supplySources          SupplySource[]
-  metakockaWarehouses    MetakockaWarehouse[]
-  metakockaPaymentTypes  MetakockaPaymentType[]
-  metakockaProfitCenters MetakockaProfitCenter[]
-  metakockaPricelists    MetakockaPricelist[]
-  metakockaTaxRates      MetakockaTaxRate[]
-  skus                   Sku[]
-  paymentTypeMaps        PaymentTypeMap[]
-  paymentSetting         PaymentSetting?
-  salesOrderSetting      SalesOrderSetting?
-  supplySetting          SupplySetting?
-  productSyncSetting     ProductSyncSetting?
-  orders                 Order[]
-  orderPayments          OrderPayment[]
-  metakockaDocuments     MetakockaDocument[]
-  exceptions             Exception[]
-  taxSetting             TaxSetting?
-  vatRegistrations       VatRegistration[]
-  countryVatRates        CountryVatRate[]
-  taxMappings            TaxMapping[]
-  taxOverrides           TaxOverride[]
-  orderTaxSnapshots      OrderTaxSnapshot[]
-  saleCampaigns          SaleCampaign[]
-  saleCampaignVariants   SaleCampaignVariant[]
-  saleRuns               SaleRun[]
-  catalogProducts        CatalogProduct[]
-  catalogVariants        CatalogVariant[]
-  catalogPriceLists      CatalogPriceList[]
-  attributeSchema        AttributeSchema?
-  translationLanguages   TranslationLanguage[]
-  translationCoverages   TranslationCoverage[]
-  translationGlossary    TranslationGlossaryTerm[]
-  translationSources     TranslationSourceOverride[]
-  translationOwnerships  TranslationOwnership[]
-  translationSyncs       TranslationSync[]
-  translationFailures    TranslationFailure[]
-  translationSyncItems   TranslationSyncItem[]
-  translationProfile     TranslationStoreProfile?
-  translationTerms       TranslationTerm[]
-  translationMemory      TranslationMemory[]
-  aiUsage                AiUsage[]
+  eventLogs               EventLog[]
+  metakockaCredential     MetakockaCredential?
+  exportPortalConnection  ExportPortalConnection?
+  supplySources           SupplySource[]
+  metakockaWarehouses     MetakockaWarehouse[]
+  metakockaPaymentTypes   MetakockaPaymentType[]
+  metakockaProfitCenters  MetakockaProfitCenter[]
+  metakockaPricelists     MetakockaPricelist[]
+  metakockaTaxRates       MetakockaTaxRate[]
+  skus                    Sku[]
+  paymentTypeMaps         PaymentTypeMap[]
+  paymentSetting          PaymentSetting?
+  salesOrderSetting       SalesOrderSetting?
+  supplySetting           SupplySetting?
+  productSyncSetting      ProductSyncSetting?
+  orders                  Order[]
+  orderPayments           OrderPayment[]
+  metakockaDocuments      MetakockaDocument[]
+  exceptions              Exception[]
+  taxSetting              TaxSetting?
+  vatRegistrations        VatRegistration[]
+  countryVatRates         CountryVatRate[]
+  taxMappings             TaxMapping[]
+  taxOverrides            TaxOverride[]
+  orderTaxSnapshots       OrderTaxSnapshot[]
+  saleCampaigns           SaleCampaign[]
+  saleCampaignVariants    SaleCampaignVariant[]
+  saleRuns                SaleRun[]
+  catalogProducts         CatalogProduct[]
+  catalogVariants         CatalogVariant[]
+  catalogPriceLists       CatalogPriceList[]
+  attributeSchema         AttributeSchema?
+  translationLanguages    TranslationLanguage[]
+  translationCoverages    TranslationCoverage[]
+  translationGlossary     TranslationGlossaryTerm[]
+  translationSources      TranslationSourceOverride[]
+  translationOwnerships   TranslationOwnership[]
+  translationFailures     TranslationFailure[]
+  translationCoverageScan TranslationCoverageScan?
+  translationSyncs        TranslationSync[]
+  translationSyncItems    TranslationSyncItem[]
+  translationProfile      TranslationStoreProfile?
+  translationTerms        TranslationTerm[]
+  translationMemory       TranslationMemory[]
+  aiUsage                 AiUsage[]
 
   @@map("shop")
 }
@@ -226,6 +228,29 @@ model MetakockaCredential {
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@map("metakocka_credential")
+}
+
+/// The store's connection to the export portal (docs/sources.md).
+///
+/// One API key per shop, generated in the portal's own admin and pasted here.
+/// The portal binds the key to a tenant and to this shop domain, so the key
+/// is the whole credential; the tenant name is a label the portal answered
+/// with, kept so the screen can say whose sources these are without a call.
+model ExportPortalConnection {
+  id              String    @id @default(cuid())
+  shopId          String    @unique @map("shop_id")
+  apiKeyEncrypted String    @map("api_key_encrypted")
+  /// The tenant the portal said the key belongs to, on the last successful call.
+  tenantId        String?   @map("tenant_id")
+  tenantName      String?   @map("tenant_name")
+  /// Last time a call to the portal actually succeeded with this key.
+  lastVerifiedAt  DateTime? @map("last_verified_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@map("export_portal_connection")
 }
 
 /// Which system holds the correct stock for a warehouse, and therefore which
@@ -2304,6 +2329,8 @@ model TranslationLanguage {
   /// Content groups (`domain/translations` `CONTENT_GROUPS`), e.g. "products".
   contentScope       String[]                   @map("content_scope")
   overwritePolicy    TranslationOverwritePolicy @default(update_ai_managed) @map("overwrite_policy")
+  /// Fields kept in the source language (`domain/translations` `KEEP_ORIGINAL`).
+  keepOriginal       String[]                   @default([]) @map("keep_original")
 
   lastSyncAt           DateTime? @map("last_sync_at")
   lastSuccessfulSyncAt DateTime? @map("last_successful_sync_at")
@@ -2328,8 +2355,6 @@ model TranslationCoverage {
   resourceType String @map("resource_type")
 
   resources     Int @default(0)
-  /// Fields kept in the source language (`domain/translations` `KEEP_ORIGINAL`).
-  keepOriginal       String[]                   @default([]) @map("keep_original")
   fields        Int @default(0)
   translated    Int @default(0)
   outdated      Int @default(0)
@@ -2345,6 +2370,35 @@ model TranslationCoverage {
 
   @@unique([shopId, locale, resourceType])
   @@map("translation_coverage")
+}
+
+/// The store-wide coverage count as it runs (docs/translations.md § Coverage):
+/// one row per shop, rewritten by each pass of the chunked count so a page
+/// can show how far it is and tell a count that is working from one that
+/// stopped. `run_id` names the current count; a pass of an older one exits.
+model TranslationCoverageScan {
+  id                String    @id @default(cuid())
+  shopId            String    @unique @map("shop_id")
+  runId             String    @map("run_id")
+  /// `running`, `done` or `failed`.
+  status            String
+  typesTotal        Int       @map("types_total")
+  typesDone         Int       @default(0) @map("types_done")
+  currentType       String?   @map("current_type")
+  resourcesRead     Int       @default(0) @map("resources_read")
+  /// Resources the previous count saw, for a percentage; null the first time.
+  expectedResources Int?      @map("expected_resources")
+  /// Types Shopify would not read, with its reason: `[{ type, reason }]`.
+  unread            Json?
+  error             String?
+  startedAt         DateTime  @map("started_at")
+  /// Moved by every pass; a running count untouched for long has stopped.
+  heartbeatAt       DateTime  @map("heartbeat_at")
+  finishedAt        DateTime? @map("finished_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@map("translation_coverage_scan")
 }
 
 enum TranslationGlossaryKind {
@@ -2410,30 +2464,6 @@ enum TranslationOwner {
   @@map("translation_owner")
 }
 
-/// What this app wrote, per field and language, and a hash of the value so a
-/// later pass can tell whether a person has changed it since. The safety
-/// boundary that keeps a manual correction from being overwritten.
-model TranslationOwnership {
-  id           String @id @default(cuid())
-  shopId       String @map("shop_id")
-  resourceId   String @map("resource_id")
-  resourceType String @map("resource_type")
-  key          String
-  locale       String
-
-  owner        TranslationOwner
-  /// SHA-256 of the translation value as written, base64url.
-  valueHash    String           @map("value_hash")
-  /// Shopify's digest of the source content the translation was made from.
-  sourceDigest String?          @map("source_digest")
-  syncId       String?          @map("sync_id")
-  writtenBy    String?          @map("written_by")
-  writtenAt    DateTime         @map("written_at")
-
-  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
-
-  @@unique([shopId, resourceId, key, locale])
-  @@index([shopId, locale, owner])
 /// The last failed attempt to translate one resource into one language, so
 /// automatic work does not pay the provider for the same failure on every
 /// webhook and every night (docs/translations.md § Failures). Keyed by the
@@ -2460,6 +2490,30 @@ model TranslationFailure {
   @@map("translation_failure")
 }
 
+/// What this app wrote, per field and language, and a hash of the value so a
+/// later pass can tell whether a person has changed it since. The safety
+/// boundary that keeps a manual correction from being overwritten.
+model TranslationOwnership {
+  id           String @id @default(cuid())
+  shopId       String @map("shop_id")
+  resourceId   String @map("resource_id")
+  resourceType String @map("resource_type")
+  key          String
+  locale       String
+
+  owner        TranslationOwner
+  /// SHA-256 of the translation value as written, base64url.
+  valueHash    String           @map("value_hash")
+  /// Shopify's digest of the source content the translation was made from.
+  sourceDigest String?          @map("source_digest")
+  syncId       String?          @map("sync_id")
+  writtenBy    String?          @map("written_by")
+  writtenAt    DateTime         @map("written_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, resourceId, key, locale])
+  @@index([shopId, locale, owner])
   @@map("translation_ownership")
 }
 

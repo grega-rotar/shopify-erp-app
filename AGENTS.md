@@ -23,6 +23,9 @@ documentation, or Git—not only in a conversation.
 - `docs/translations.md` owns the translations module: ownership between
   Shopify, this app and the environment, the data model, the overwrite rules,
   the provider and usage accounting, jobs, screens, scopes and known limits.
+- `docs/sources.md` owns the Sources module and the export portal contract:
+  why two apps share one UI, what each side owns, the API this app calls,
+  the schema-driven fields, failures, screens and known limits.
 - Code and tests define implemented behavior. Git records historical behavior.
 - `docs/agent/HANDOFF.md`, when present, is the concise state of substantial
   unfinished work. It is not a permanent backlog.

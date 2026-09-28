@@ -188,10 +188,24 @@ A language may keep some fields in the source language
 names and values, collection names. The planner skips them with the reason
 `kept_original` in every mode, `force` included, and whoever asks — a sync, a
 webhook or the editor's "translate this". Shoppers see the original.
-Translations already there are left alone (delete them in the editor, or
-all of a language's with **Delete all translations**), and coverage does not
-count a kept field, so the language does not look forever incomplete. Set on
-the language page under AI translation.
+Checking one removes what the AI wrote for the field (§ Switched off); a
+person's translation stays until they change or delete it. Neither coverage
+nor the editor counts a kept field — the editor badges it "Kept in
+original" — so the language does not look forever incomplete. Set on the
+language page under AI translation.
+
+### Switched off
+
+Saving a language's settings with a content group taken out of "What gets
+translated", or a field newly kept in the original, removes the AI's
+translations of it (`removalScope` in `domain/translations/types`): the
+group's types whole, the kept field's keys only. Only a field whose state is
+`ai` — this app wrote it and Shopify's value still matches the hash — goes;
+`manual` and `existing` stay. The work is `translation-remove` with a
+`scope`, one job per shop, language and scope; the event is
+`translation_language.ai_translations_removed` and coverage is counted
+again at the end. Putting content back in scope removes nothing and
+translates nothing until the next sync.
 
 ## Source language
 
@@ -517,19 +531,37 @@ in a tooltip that the pointer or the arrow keys move.
 
 ## Coverage and estimates
 
-`translation-coverage` reads every translatable resource of every supported
-type once, counting per (locale, type) with the same field test the planner
-uses, and replaces the cache. It runs after a sync completes, on request from
-the Languages and Translate store pages (throttled), and nightly.
+`translation-coverage` counts every translatable resource of every supported
+type, per (locale, type), with the same field test the planner uses — and
+leaves out the fields a language keeps in the original language.
 
-A type Shopify will not read costs that type, not the count: the others are
-counted and written, then the job fails naming what was not read; when
-nothing at all could be read the old counts stay. The Languages page asks
-pg-boss what became of the shop's last count (`coverageCountState` →
-`latestJobForKey`): while one is waiting or running the page says so and
-polls; when the last one failed after the cache was written, the page shows
-the reason. A button whose work runs on the worker must be able to say what
-happened to it, or a failed count looks like a button that does nothing.
+A count runs in **chunks**: each pass reads ten pages of fifty resources of
+the current type and re-enqueues itself with the cursor and that type's
+counts so far in the job data (`readCoverageChunk`). A type read whole
+replaces its own rows in the cache (`replaceCoverageForType`), so the tables
+fill in as the count goes and a reader never sees half a type. It used to be
+one job over the whole store, which on a large catalogue outlived its expiry
+and started again, with nothing to show meanwhile.
+
+Its progress is one row per shop, `translation_coverage_scan`: a run id,
+kinds of content done out of the total, the type being read, resources read,
+the resources the previous count saw (the denominator of the percentage; on
+a first count the kinds of content are), the types Shopify would not read,
+and a heartbeat every pass moves. `requestCoverageRefresh` starts a count
+under a new run id unless one is running and moving — a pass of a replaced
+run stops — and a count whose heartbeat is fifteen minutes old has stopped
+and is replaced by the next request. `describeCoverageScan` turns the row
+into what the Languages overview and a language's sidebar show
+(`CoverageCount`): a progress bar with what is being read while counting
+(the pages poll), "The count stopped" with Count again, or the content that
+could not be read.
+
+A count starts when a sync a person or the night started completes, when a
+language's translations are deleted, from the page buttons, and nightly.
+**Not** after a sync collected from product webhooks: those complete all day,
+and recounting the store after each one kept a count queued for ever. A type
+Shopify will not read costs that type, not the count; the count still ends,
+naming it.
 
 "Translate store" estimates from that cache in the browser as the choices
 change: fields and source characters for the mode → tokens at about 3.5
@@ -544,10 +576,10 @@ tokens are still recorded.
 | Queue                        | Trigger                                                        | Does                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `translation-sync`           | `startSync` from a page or the nightly tick; itself, per page  | One page (10 resources) of the current type through the engine, records items, advances cursor, re-enqueues; checks for cancel between pages; completes, marks the languages' last successful sync, asks for coverage |
-| `translation-coverage`       | After a sync; page buttons; nightly per shop                   | The store-wide count, replaced whole                                                                    |
+| `translation-coverage`       | `requestCoverageRefresh`: a person's or the nightly sync completing, delete all, page buttons, nightly; itself, per chunk | Ten pages of the current type; a finished type replaces its rows; moves the progress row; re-enqueues with cursor and carried counts |
 | `translation-resource-event` | `products/create`, `products/update` webhooks                  | Puts the product on the collecting `resource` sync for every language with automatic translation on (one per mode); drops the echo of this app's own write |
 | `translation-profile`        | Store context page: Build now / Read the store again           | `ensureStoreProfile` with `force`: re-reads the snapshot, rebuilds the profile, rediscovers the terms   |
-| `translation-remove`         | Language page: Delete all translations; itself, per page       | One page (50 resources) of the current type: `translationsRemove` for every key translated in the language, forgets ownership and remembered failures; re-enqueues with its cursor in the job data; asks for coverage at the end |
+| `translation-remove`         | Language page: Delete all translations, or saving settings that switch content off; itself, per page | One page (50 resources) of the current type: `translationsRemove` for every key translated in the language — or, with a `scope`, only the scope's keys the AI wrote and nobody touched (§ Switched off) — forgets ownership and remembered failures; re-enqueues with its cursor in the job data; asks for coverage at the end |
 
 `translation-sync` and the others run under `policy: "short"` so the singleton
 key per sync holds; the cursor moves only over recorded work, so a retried

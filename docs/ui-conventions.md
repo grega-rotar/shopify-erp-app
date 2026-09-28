@@ -188,6 +188,9 @@ differs it is given, because the code is not going to be renamed to match.
 | **Edited by a person** | A translation a person wrote or corrected, which the AI protects. Never "manual" in copy. | `owner = manual` |
 | **Outdated** | Shopify's own word for a translation whose source has changed since. | `Translation.outdated` |
 | **Estimated cost** | Every money figure on the AI usage pages; the provider reports tokens, not money. Never "cost" alone. | `estimated_cost_micros`, `PRICING_VERSION` |
+| **Source** | One product source the export portal pushes into the store: a catalogue export or a brand feed, at one location, with its own settings. The portal's own word. Never "feed" or "export" alone in copy. Distinct from a *supply source* (a warehouse) and a *source language*, which keep their qualifiers. | `Source`, `/app/sources` |
+| **Run** (sources) | One execution of a source. Never "job" in copy. | `Run`, `/app/sources/:id/runs/:runId` |
+| **Export portal** | The other product, named in full every time. Never "the portal" alone on a page that has not said which. | `EXPORT_PORTAL_URL`, `ExportPortalClient` |
 
 Words that must not appear in merchant-facing copy: **article** (the build
 specification's word for a MetaKocka product), **token**, **template**, **code**

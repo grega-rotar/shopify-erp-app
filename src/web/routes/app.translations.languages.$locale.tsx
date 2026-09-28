@@ -29,11 +29,17 @@ import {
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { isLocaleCode } from "~/adapters/shopify/translations";
 import { enqueue, latestJobForKey } from "~/adapters/queue/boss.server";
-import { QUEUES, translationRemoveKey } from "~/adapters/queue/queues";
 import {
+  QUEUES,
+  translationRemoveAiKey,
+  translationRemoveKey,
+} from "~/adapters/queue/queues";
+import {
+  coverageProgress,
   requestCoverageRefresh,
   startSync,
 } from "~/adapters/translations/syncs.server";
+import { CoverageCount } from "~/web/components/coverage-count";
 import { totalsFor } from "~/domain/translations/coverage";
 import { coveragePercent } from "~/domain/translations/estimate";
 import { describeLanguage } from "~/domain/translations/languages";
@@ -45,6 +51,7 @@ import {
   OVERWRITE_POLICY_LABEL,
   isContentGroup,
   isKeepOriginal,
+  removalScope,
   typesForGroups,
   type ContentGroup,
   type KeepOriginal,
@@ -94,7 +101,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const notice = search.get("notice");
   const justAdded = search.get("added") === "1";
 
-  const [locales, markets, settings, coverage, glossary, syncs, removal] =
+  const [locales, markets, settings, coverage, glossary, syncs, removal, count] =
     await Promise.all([
       listShopLocales(admin),
       listMarkets(admin),
@@ -106,6 +113,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         QUEUES.translationRemove,
         translationRemoveKey(principal.shopDomain, locale),
       ),
+      coverageProgress(principal),
     ]);
   if (locales.kind === "unavailable")
     return {
@@ -172,6 +180,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       removal?.state === "active",
     removalFailed: removal?.state === "failed" ? removal.error : null,
     lastSuccessfulSyncAt: settings.lastSuccessfulSyncAt?.toISOString() ?? null,
+    coverageCount: count,
     coverage: {
       readAt: coverage.readAt?.toISOString() ?? null,
       percent: coveragePercent([totals]),
@@ -319,7 +328,8 @@ export const action = async ({
         message: "The form could not be read. Reload the page and try again.",
       };
     const form = parsed.data;
-    await saveLanguageSettings(principal, {
+    const before = await getLanguageSettings(principal, locale);
+    const after = {
       locale,
       aiEnabled: form.aiEnabled,
       autoTranslateNew: form.aiEnabled && form.autoTranslateNew,
@@ -327,13 +337,44 @@ export const action = async ({
       contentScope: form.contentScope.filter(isContentGroup),
       overwritePolicy: form.overwritePolicy,
       keepOriginal: form.keepOriginal.filter(isKeepOriginal),
-    });
+    };
+    await saveLanguageSettings(principal, after);
     await appendEvent(principal, {
       entityType: "translation_language",
       entityId: locale,
       event: "translation_language.settings_changed",
       detail: { ...form, by: actor },
     });
+    // Content taken out of scope, or a field now kept in the original,
+    // loses what the AI wrote for it (docs/translations.md § Switched off);
+    // a person's translations stay. The job counts coverage when done.
+    const scope = removalScope(before, after);
+    if (scope.length > 0) {
+      await enqueue(
+        QUEUES.translationRemove,
+        {
+          shopDomain: principal.shopDomain,
+          locale,
+          requestedBy: actor,
+          scope,
+        },
+        {
+          singletonKey: translationRemoveAiKey(
+            principal.shopDomain,
+            locale,
+            scope,
+          ),
+        },
+      );
+      return {
+        ok: true,
+        message:
+          "Saved. Deleting the AI translations of what you switched off.",
+      };
+    }
+    // A field no longer kept in the original counts as missing again.
+    if (before.keepOriginal.some((c) => !after.keepOriginal.includes(c)))
+      await requestCoverageRefresh(principal);
     return { ok: true, message: "AI translation settings saved." };
   }
 
@@ -400,7 +441,7 @@ export const action = async ({
   }
 
   if (intent === "refresh-coverage") {
-    const jobId = await requestCoverageRefresh(principal, 60);
+    const jobId = await requestCoverageRefresh(principal);
     return {
       ok: true,
       message: jobId
@@ -473,7 +514,9 @@ function LanguagePage({
   busy: boolean;
   result: ActionResult | null;
 }) {
-  useLivePolling(data.syncing || data.removing);
+  useLivePolling(
+    data.syncing || data.removing || data.coverageCount.state === "counting",
+  );
   const [settings, setSettings] = useState<Settings>(data.settings);
   const savedKey = JSON.stringify(data.settings);
   useResetWhenSaved(
@@ -639,7 +682,7 @@ function LanguagePage({
                     <s-divider />
                     <CheckboxGroup
                       heading="What gets translated"
-                      details="Content the AI works on, whether you ask or it runs automatically."
+                      details="Content the AI works on, whether you ask or it runs automatically. Unchecking content deletes the translations the AI wrote for it when you save; translations a person wrote or edited stay."
                     >
                       {ALL_CONTENT_GROUPS.map((group) => (
                         <s-checkbox
@@ -657,7 +700,7 @@ function LanguagePage({
                     <s-divider />
                     <CheckboxGroup
                       heading="Keep in the original language"
-                      details="The AI leaves these alone and shoppers see the original. Translations already there stay until you change or delete them."
+                      details="The AI leaves these alone, shoppers see the original, and they are not counted as missing. Checking one deletes the translations the AI wrote for it when you save; translations a person wrote or edited stay."
                     >
                       {ALL_KEEP_ORIGINAL.map((choice) => (
                         <s-checkbox
@@ -1210,24 +1253,18 @@ function LanguageSummary({
                 ) : null}
               </s-stack>
             )}
-            <s-grid gridTemplateColumns="1fr auto" gap="base" alignItems="center">
+            <CoverageCount
+              progress={data.coverageCount}
+              countedAt={coverage.readAt}
+              busy={busy || data.removing}
+              onCount={onCount}
+              compact
+            />
+            {data.lastSuccessfulSyncAt ? (
               <s-text color="subdued">
-                {coverage.readAt
-                  ? `Counted ${formatDateTime(coverage.readAt)}.`
-                  : ""}
-                {data.lastSuccessfulSyncAt
-                  ? ` Last sync ${formatDateTime(data.lastSuccessfulSyncAt)}.`
-                  : ""}
+                {`Last sync ${formatDateTime(data.lastSuccessfulSyncAt)}.`}
               </s-text>
-              <s-button
-                type="button"
-                variant="tertiary"
-                onClick={onCount}
-                {...(busy || data.removing ? { disabled: true } : {})}
-              >
-                Count again
-              </s-button>
-            </s-grid>
+            ) : null}
           </>
         ) : null}
       </s-stack>

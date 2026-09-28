@@ -27,6 +27,7 @@ import { listShopLocales } from "~/adapters/shopify/locales";
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { requestProfileRebuild } from "~/adapters/translations/syncs.server";
 import { TERM_CLASSIFICATION_LABEL } from "~/domain/translations/profile";
+import { BulkBar, useSelection } from "~/web/components/bulk-selection";
 import { Dropdown } from "~/web/components/dropdown";
 import { Columns } from "~/web/components/page-columns";
 import { ToggleRow } from "~/web/components/toggle-row";
@@ -686,62 +687,6 @@ function Stat({
 type TermRow = LoaderData["terms"]["rows"][number];
 type MemoryRow = LoaderData["memory"]["rows"][number];
 
-/** Which rows of the page are ticked, and the bar that acts on them. */
-function useSelection(ids: readonly string[]) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const key = ids.join(",");
-  // A new page of rows starts unticked.
-  useEffect(() => setSelected(new Set()), [key]);
-  const all = ids.length > 0 && ids.every((id) => selected.has(id));
-  return {
-    selected,
-    all,
-    toggle: (id: string, on: boolean) =>
-      setSelected((current) => {
-        const next = new Set(current);
-        if (on) next.add(id);
-        else next.delete(id);
-        return next;
-      }),
-    toggleAll: (on: boolean) => setSelected(on ? new Set(ids) : new Set()),
-    clear: () => setSelected(new Set()),
-  };
-}
-
-function BulkBar({
-  count,
-  noun,
-  action,
-  busy,
-  onAct,
-  onClear,
-}: {
-  count: number;
-  noun: string;
-  action: string;
-  busy: boolean;
-  onAct: () => void;
-  onClear: () => void;
-}) {
-  if (count === 0) return null;
-  return (
-    <s-stack direction="inline" gap="base" alignItems="center">
-      <s-text type="strong">{`${n(count)} ${noun} selected`}</s-text>
-      <s-button
-        variant="secondary"
-        tone="critical"
-        onClick={onAct}
-        {...(busy ? { disabled: true } : {})}
-      >
-        {action}
-      </s-button>
-      <s-button variant="tertiary" onClick={onClear}>
-        Clear
-      </s-button>
-    </s-stack>
-  );
-}
-
 function Terminology({
   data,
   busy,
@@ -961,14 +906,18 @@ function Terminology({
             <BulkBar
               count={terms.selected.size}
               noun={terms.selected.size === 1 ? "term" : "terms"}
-              action="Forget selected"
+              actions={[
+                {
+                  label: "Forget selected",
+                  tone: "critical",
+                  onAct: () =>
+                    submit({
+                      intent: "forget-terms",
+                      ids: [...terms.selected].join(","),
+                    }),
+                },
+              ]}
               busy={busy}
-              onAct={() =>
-                submit({
-                  intent: "forget-terms",
-                  ids: [...terms.selected].join(","),
-                })
-              }
               onClear={terms.clear}
             />
             <Pager
@@ -1093,14 +1042,18 @@ function Terminology({
             <BulkBar
               count={memory.selected.size}
               noun={memory.selected.size === 1 ? "translation" : "translations"}
-              action="Forget selected"
+              actions={[
+                {
+                  label: "Forget selected",
+                  tone: "critical",
+                  onAct: () =>
+                    submit({
+                      intent: "forget-memories",
+                      ids: [...memory.selected].join(","),
+                    }),
+                },
+              ]}
               busy={busy}
-              onAct={() =>
-                submit({
-                  intent: "forget-memories",
-                  ids: [...memory.selected].join(","),
-                })
-              }
               onClear={memory.clear}
             />
             <Pager

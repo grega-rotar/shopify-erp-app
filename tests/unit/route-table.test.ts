@@ -147,6 +147,33 @@ describe("route table", () => {
     );
   });
 
+  it("gives Sources its list, its connection, a new source, one source, its runs and one run", async () => {
+    expect(await fileFor("/app/sources")).toBe(
+      "routes/app.sources._index.tsx",
+    );
+    // "connection" and "new" are static and sit beside the dynamic source
+    // id, the Orders shape again: static must win or the connection page
+    // becomes a lookup for a source called "connection".
+    expect(await fileFor("/app/sources/connection")).toBe(
+      "routes/app.sources.connection.tsx",
+    );
+    expect(await fileFor("/app/sources/new")).toBe(
+      "routes/app.sources.new.tsx",
+    );
+    expect(await fileFor("/app/sources/review")).toBe(
+      "routes/app.sources.review.tsx",
+    );
+    expect(await fileFor("/app/sources/src_1")).toBe(
+      "routes/app.sources.$sourceId._index.tsx",
+    );
+    expect(await fileFor("/app/sources/src_1/runs")).toBe(
+      "routes/app.sources.$sourceId.runs._index.tsx",
+    );
+    expect(await fileFor("/app/sources/src_1/runs/run_9")).toBe(
+      "routes/app.sources.$sourceId.runs.$runId.tsx",
+    );
+  });
+
   it("keeps the product view beside the products settings page", async () => {
     // A product's numeric id is dynamic; "sync" is static and must still win.
     expect(await fileFor("/app/products/sync")).toBe(
