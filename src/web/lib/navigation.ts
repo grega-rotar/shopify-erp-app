@@ -22,23 +22,30 @@ export interface NavItem {
 export const APP_HOME = "/app";
 
 /**
- * Seven visible entries. Orders, Products and Locations are all the MetaKocka
- * integration seen from three sides, and three top-level items for one job
- * made the menu longer than the job; they live under one **MetaKocka** entry
- * whose page (`/app/metakocka`) opens onto them. Their own addresses are
- * unchanged, so every link and bookmark still lands. **Translations**
- * (docs/translations.md) is the store's languages and their translations,
- * with its own sections beneath it. **Sources** (docs/sources.md) is what the
- * export portal pushes into the store — stock, products, prices — configured
- * here and carried out by the portal.
+ * Eight visible entries, in the order a merchant reaches for them. The admin
+ * draws the list with no groups or dividers, so the order is the grouping:
+ *
+ *  1. **Needs attention** first: the one place everything in the app that
+ *     wants a person — orders, sales, translations, stopped jobs — lands.
+ *  2. **Orders** and **Sales**, the daily work. Orders sat behind the MetaKocka
+ *     page for a while, which put the most-used page two clicks away and left
+ *     no entry highlighted while it was open.
+ *  3. **Metafields** and **Translations**, the catalogue's content.
+ *  4. **MetaKocka** and **Sources**, the two systems that feed the store.
+ *     MetaKocka's page opens onto its products, locations and connection, and
+ *     those live under `/app/metakocka/` so its entry is the one highlighted
+ *     (the admin highlights the entry the current path starts with).
+ *     Sources (docs/sources.md) is what the export portal pushes in.
+ *  5. **Settings** last.
  */
 export const APP_NAV: readonly NavItem[] = [
   { href: APP_HOME, label: "Home", rel: "home" },
+  { href: "/app/exceptions", label: "Needs attention" },
+  { href: "/app/orders", label: "Orders" },
   { href: "/app/sales", label: "Sales" },
   { href: "/app/product-setup", label: "Metafields" },
   { href: "/app/translations", label: "Translations" },
-  { href: "/app/sources", label: "Sources" },
   { href: "/app/metakocka", label: "MetaKocka" },
-  { href: "/app/exceptions", label: "Needs attention" },
+  { href: "/app/sources", label: "Sources" },
   { href: "/app/settings", label: "Settings" },
 ];

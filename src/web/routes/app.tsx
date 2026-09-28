@@ -32,15 +32,11 @@ export default function AppLayout() {
     <>
       <AppBridgeNavigation />
       {/*
-       * Five areas, each of which is a thing a merchant does rather than a
-       * table this app happens to keep (the product UX brief, section 13).
-       *
-       * "Order sync", "Payment types" and "Connection" used to sit here beside
-       * Orders, which asked the merchant to know that order sync and orders
-       * were the same subject and that payment types were part of it. Those are
-       * sub-pages now: order behaviour under Orders, the ERP connection under
-       * Settings. Sub-pages highlight their parent because the path does
-       * (section 2.6).
+       * Each entry is a thing a merchant does rather than a table this app
+       * keeps (the product UX brief, section 13). The list, its order and why
+       * are in `web/lib/navigation`. Sub-pages highlight their parent because
+       * the path does (section 2.6), which is why a page's address starts with
+       * its entry's.
        */}
       <s-app-nav>
         {APP_NAV.map((item) => (

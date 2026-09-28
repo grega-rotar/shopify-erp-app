@@ -17,9 +17,11 @@ import { principalFromSession } from "~/web/lib/principal.server";
  * The MetaKocka integration's front door.
  *
  * Orders, Products and Locations are the same integration seen from three
- * sides, and each is its own page. This one exists so the navigation carries
- * one entry for the job rather than three: how each side is doing, in one
- * line each, and the door to it. Nothing here is edited; nothing here waits
+ * sides, and each is its own page. This one is how each side is doing, in one
+ * line each, and the door to it. Products and Locations live beneath it
+ * (`/app/metakocka/...`) so the MetaKocka entry stays highlighted on them;
+ * Orders is used daily and has its own entry, and is listed here too because
+ * its health is part of the integration's. Nothing here is edited; nothing here waits
  * on MetaKocka (docs/BUILD_SPEC.md §2.5) — readiness is computed from our own
  * tables.
  */
@@ -45,12 +47,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
       {
         title: "Products",
-        href: "/app/products",
+        href: "/app/metakocka/products",
         ...summaryOf("products"),
       },
       {
         title: "Locations",
-        href: "/app/locations",
+        href: "/app/metakocka/locations",
         ...summaryOf("stock"),
       },
       {

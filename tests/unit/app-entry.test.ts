@@ -177,4 +177,29 @@ describe("the primary navigation", () => {
     const visible = APP_NAV.filter((item) => item.rel !== "home");
     expect(visible.some((item) => item.href === APP_HOME)).toBe(false);
   });
+
+  /*
+   * The admin highlights the entry whose address the current path starts
+   * with. Products and Locations once sat at /app/products and
+   * /app/locations behind the MetaKocka entry, and Orders behind it too, so
+   * the most-used pages in the app had nothing highlighted.
+   */
+  it("highlights an entry on every area's pages", () => {
+    const visible = APP_NAV.filter((item) => item.rel !== "home");
+    const entryFor = (path: string) =>
+      visible.find(
+        (item) => path === item.href || path.startsWith(`${item.href}/`),
+      )?.label;
+
+    expect(entryFor("/app/exceptions")).toBe("Needs attention");
+    expect(entryFor("/app/orders/123")).toBe("Orders");
+    expect(entryFor("/app/orders/settings/payments")).toBe("Orders");
+    expect(entryFor("/app/sales/abc/variants")).toBe("Sales");
+    expect(entryFor("/app/product-setup/attributes")).toBe("Metafields");
+    expect(entryFor("/app/translations/editor")).toBe("Translations");
+    expect(entryFor("/app/metakocka/products/123456")).toBe("MetaKocka");
+    expect(entryFor("/app/metakocka/locations/settings")).toBe("MetaKocka");
+    expect(entryFor("/app/sources/connection")).toBe("Sources");
+    expect(entryFor("/app/settings/taxes/rates")).toBe("Settings");
+  });
 });

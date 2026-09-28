@@ -44,12 +44,19 @@ randomness; callers inject time and inputs.
 
 ## Merchant-facing shape
 
-Seven visible entries in `s-app-nav`, each a job rather than a table. Every
-settings page lives with the thing it configures, so nothing in the navigation
-is a database name:
+Eight visible entries in `s-app-nav`, each a job rather than a table. The
+admin draws the list with no groups, so the order is the grouping: the inbox,
+the daily work, the catalogue's content, the systems that feed the store, then
+settings. The admin highlights the entry the current path starts with, so every
+page's address starts with its entry's; `tests/unit/app-entry.test.ts` asserts
+that for each area. Every settings page lives with the thing it configures, so
+nothing in the navigation is a database name:
 
 ```text
-Home              /app                  operations dashboard
+Home              /app                  operations dashboard (the app's name; no visible entry)
+Needs attention   /app/exceptions       everything that wants a person, from every area
+Orders            /app/orders           list, /app/orders/:id, /app/orders/settings
+                                        and /app/orders/settings/payments
 Sales             /app/sales            sale campaigns; /app/sales/:id is the editor,
                                         /app/sales/:id/variants every variant it touches
 Metafields        /app/product-setup    lands on /app/product-setup/types/:typeId?, the tree of
@@ -59,18 +66,15 @@ Metafields        /app/product-setup    lands on /app/product-setup/types/:typeI
 Translations      /app/translations     the store's languages (docs/translations.md); its own
                                         navigation reaches /add, /languages/:locale, /editor,
                                         /translate, /syncs (/:syncId), /glossary and /usage
+MetaKocka         /app/metakocka        the integration's front door: how each side is
+                                        doing, opening onto Orders and
+  Products        /app/metakocka/products    status, /sync for settings, and /:id —
+                                             one product as a sale sees it
+  Locations       /app/metakocka/locations   how stock is going, and /settings for the
+                                             mappings, the defaults and the profit centres
 Sources           /app/sources          what the export portal pushes into the store, a view onto
                                         the portal (docs/sources.md); /new, /:sourceId,
                                         /:sourceId/runs/:runId and /connection (the API key)
-MetaKocka         /app/metakocka        the integration's front door: how each side is
-                                        doing, opening onto
-  Orders          /app/orders           list, and /app/orders/settings
-  Products        /app/products         status, /app/products/sync for settings,
-                                        and /app/products/:id — one product as a sale sees it
-  Locations       /app/locations        how stock is going, and
-                                        /app/locations/settings for the mappings,
-                                        the defaults and the profit centres
-Needs attention   /app/exceptions
 Settings          /app/settings         hub; /app/settings/metakocka is the connection,
                                         /app/settings/taxes is Taxes & VAT (an overview,
                                         then registrations, rates, mappings, overrides)
@@ -91,19 +95,21 @@ outside the admin. `tests/unit/app-entry.test.ts` enumerates every root
 request the admin can produce and asserts each lands in `/app`.
 
 Guided setup is `/app/setup`, five steps, reachable again from Home and
-Settings. Three routes moved and redirect: `/app/settings/sales-orders` to
+Settings. Moved routes redirect: `/app/settings/sales-orders` to
 `/app/orders/settings`, `/app/settings/payments` to
 `/app/orders/settings/payments`, `/app/settings/supply-sources` to
-`/app/locations`. `tests/unit/route-table.test.ts` asserts the table, including
-that `/app/orders/settings` out-ranks `/app/orders/:orderId`.
+`/app/metakocka/locations`, and `/app/products/*` and `/app/locations/*` to the
+same pages under `/app/metakocka/`. `tests/unit/route-table.test.ts` asserts the
+table, including that `/app/orders/settings` out-ranks `/app/orders/:orderId`.
 
 **An area is a page you land on plus a settings page behind its header
 button.** Orders, Products and Locations are all built that way: the landing
 page answers "is this working" with a breakdown and what is happening now, and
 the settings page answers "what was it told to do". That is why the locations
-route is `app.locations._index.tsx` rather than `app.locations.tsx` — a leaf
-route with a child becomes a parent layout, and this one has no outlet to
-render it in.
+route is `app.metakocka.locations._index.tsx` rather than
+`app.metakocka.locations.tsx`, and the MetaKocka page `app.metakocka._index.tsx`
+— a leaf route with a child becomes a parent layout, and these have no outlet
+to render it in.
 
 **Every redirect under `/app` goes through `redirectWithin`** in
 `src/web/lib/redirects.ts`, which carries the request's query string and lets

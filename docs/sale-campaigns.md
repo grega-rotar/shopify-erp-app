@@ -40,7 +40,7 @@ web (React Router)                         worker (pg-boss)
   `catalogue.server.ts` — tenant-scoped persistence, the ownership claim, the
   batch claim.
 - `src/jobs/handlers/sale-*.ts`, `catalogue-snapshot.ts` — orchestration.
-- `src/web/routes/app.sales.*` — the screens; `app.products.$productId` — the
+- `src/web/routes/app.sales.*` — the screens; `app.metakocka.products.$productId` — the
   product-side view.
 
 Nothing new in the runtime: same two processes, same queue, same audit log
@@ -413,7 +413,7 @@ shows its own trail.
   page (`DownloadButton`) and saved as a blob: a link opened in a new tab
   reaches the app without a session token and lands in the install flow
   instead of the file.
-- `/app/products/:productId` — the product view: per variant, price,
+- `/app/metakocka/products/:productId` — the product view: per variant, price,
   compare-at, sale, campaign (linked), discount, original price.
 - Needs attention gains `sale_price_conflict`, `sale_apply_failed`,
   `sale_restore_failed`, each with an action into the campaign.

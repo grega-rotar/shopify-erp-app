@@ -76,7 +76,7 @@ const LINKS: SettingsLink[] = [
     title: "Product sync",
     description:
       "Matching the two catalogues by SKU, and the optional writes into the MetaKocka catalogue.",
-    href: "/app/products/sync",
+    href: "/app/metakocka/products/sync",
   },
   {
     title: "Export portal connection",

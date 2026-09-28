@@ -45,7 +45,9 @@ describe("exceptionAction", () => {
   });
 
   it("sends an unmapped location to Locations", () => {
-    expect(exceptionAction("unmapped_location")?.href).toBe("/app/locations");
+    expect(exceptionAction("unmapped_location")?.href).toBe(
+      "/app/metakocka/locations",
+    );
   });
 
   it("sends missing shipping or discount representation to the order settings", () => {

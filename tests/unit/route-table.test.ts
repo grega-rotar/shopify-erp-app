@@ -81,17 +81,21 @@ describe("route table", () => {
     expect(await fileFor("/app")).toBe("routes/app._index.tsx");
     expect(await fileFor("/app/orders")).toBe("routes/app.orders._index.tsx");
     expect(await fileFor("/app/exceptions")).toBe("routes/app.exceptions.tsx");
-    expect(await fileFor("/app/products")).toBe(
-      "routes/app.products._index.tsx",
+    expect(await fileFor("/app/metakocka/products")).toBe(
+      "routes/app.metakocka.products._index.tsx",
     );
-    expect(await fileFor("/app/locations")).toBe(
-      "routes/app.locations._index.tsx",
+    expect(await fileFor("/app/metakocka/locations")).toBe(
+      "routes/app.metakocka.locations._index.tsx",
     );
     expect(await fileFor("/app/sales")).toBe("routes/app.sales._index.tsx");
     expect(await fileFor("/app/product-setup")).toBe(
       "routes/app.product-setup._index.tsx",
     );
-    expect(await fileFor("/app/metakocka")).toBe("routes/app.metakocka.tsx");
+    // `_index`, not `app.metakocka.tsx`: with Products and Locations beneath
+    // it, a leaf would be a layout with no outlet and render them blank.
+    expect(await fileFor("/app/metakocka")).toBe(
+      "routes/app.metakocka._index.tsx",
+    );
     expect(await fileFor("/app/settings")).toBe(
       "routes/app.settings._index.tsx",
     );
@@ -148,9 +152,7 @@ describe("route table", () => {
   });
 
   it("gives Sources its list, its connection, a new source, one source, its runs and one run", async () => {
-    expect(await fileFor("/app/sources")).toBe(
-      "routes/app.sources._index.tsx",
-    );
+    expect(await fileFor("/app/sources")).toBe("routes/app.sources._index.tsx");
     // "connection" and "new" are static and sit beside the dynamic source
     // id, the Orders shape again: static must win or the connection page
     // becomes a lookup for a source called "connection".
@@ -176,11 +178,11 @@ describe("route table", () => {
 
   it("keeps the product view beside the products settings page", async () => {
     // A product's numeric id is dynamic; "sync" is static and must still win.
-    expect(await fileFor("/app/products/sync")).toBe(
-      "routes/app.products.sync.tsx",
+    expect(await fileFor("/app/metakocka/products/sync")).toBe(
+      "routes/app.metakocka.products.sync.tsx",
     );
-    expect(await fileFor("/app/products/123456")).toBe(
-      "routes/app.products.$productId.tsx",
+    expect(await fileFor("/app/metakocka/products/123456")).toBe(
+      "routes/app.metakocka.products.$productId.tsx",
     );
   });
 
@@ -189,11 +191,29 @@ describe("route table", () => {
     // you land on, and the settings behind its header button. Without the
     // rename to `_index`, `app.locations.tsx` would be a parent layout with no
     // outlet and the settings page would render as a blank locations page.
-    expect(await fileFor("/app/locations/settings")).toBe(
-      "routes/app.locations.settings.tsx",
+    expect(await fileFor("/app/metakocka/locations/settings")).toBe(
+      "routes/app.metakocka.locations.settings.tsx",
+    );
+    expect(await fileFor("/app/metakocka/products/sync")).toBe(
+      "routes/app.metakocka.products.sync.tsx",
+    );
+  });
+
+  it("keeps the old Products and Locations addresses as redirects", async () => {
+    expect(await fileFor("/app/products")).toBe(
+      "routes/app.products._index.tsx",
     );
     expect(await fileFor("/app/products/sync")).toBe(
       "routes/app.products.sync.tsx",
+    );
+    expect(await fileFor("/app/products/123456")).toBe(
+      "routes/app.products.$productId.tsx",
+    );
+    expect(await fileFor("/app/locations")).toBe(
+      "routes/app.locations._index.tsx",
+    );
+    expect(await fileFor("/app/locations/settings")).toBe(
+      "routes/app.locations.settings.tsx",
     );
   });
 

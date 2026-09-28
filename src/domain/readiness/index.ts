@@ -78,11 +78,11 @@ export interface Readiness {
  */
 export const READINESS_ROUTES = {
   connection: "/app/settings/metakocka",
-  locations: "/app/locations",
+  locations: "/app/metakocka/locations",
   orders: "/app/orders/settings",
   payments: "/app/orders/settings/payments",
   taxes: "/app/settings/taxes",
-  products: "/app/products",
+  products: "/app/metakocka/products",
   setup: "/app/setup",
 } as const;
 

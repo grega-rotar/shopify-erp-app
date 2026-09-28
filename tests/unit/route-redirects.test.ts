@@ -4,6 +4,11 @@ import { RouterContextProvider, type LoaderFunctionArgs } from "react-router";
 import { loader as salesOrders } from "~/web/routes/app.settings.sales-orders";
 import { loader as payments } from "~/web/routes/app.settings.payments";
 import { loader as supplySources } from "~/web/routes/app.settings.supply-sources._index";
+import { loader as oldProducts } from "~/web/routes/app.products._index";
+import { loader as oldProductSync } from "~/web/routes/app.products.sync";
+import { loader as oldProduct } from "~/web/routes/app.products.$productId";
+import { loader as oldLocations } from "~/web/routes/app.locations._index";
+import { loader as oldLocationSettings } from "~/web/routes/app.locations.settings";
 import { redirectWithin } from "~/web/lib/redirects";
 
 /**
@@ -22,12 +27,16 @@ import { redirectWithin } from "~/web/lib/redirects";
  * give a route with no dynamic segments. No cast: the shape is built, not
  * asserted.
  */
-function argsFor(url: string, pattern: string): LoaderFunctionArgs {
+function argsFor(
+  url: string,
+  pattern: string,
+  params: LoaderFunctionArgs["params"] = {},
+): LoaderFunctionArgs {
   return {
     request: new Request(url),
     url: new URL(url),
     pattern,
-    params: {},
+    params,
     context: new RouterContextProvider(),
   };
 }
@@ -36,9 +45,10 @@ function run(
   loader: (args: LoaderFunctionArgs) => unknown,
   url: string,
   pattern: string,
+  params: LoaderFunctionArgs["params"] = {},
 ): Response {
   try {
-    loader(argsFor(url, pattern));
+    loader(argsFor(url, pattern, params));
   } catch (thrown) {
     if (thrown instanceof Response) return thrown;
     throw thrown;
@@ -77,7 +87,7 @@ describe("old settings routes", () => {
       "/app/settings/supply-sources",
     );
 
-    expect(response.headers.get("location")).toBe("/app/locations");
+    expect(response.headers.get("location")).toBe("/app/metakocka/locations");
   });
 
   it("carries the query string, so a deep link still points somewhere", () => {
@@ -88,7 +98,40 @@ describe("old settings routes", () => {
     );
 
     expect(response.headers.get("location")).toBe(
-      "/app/locations?shop=demo.myshopify.com&host=abc",
+      "/app/metakocka/locations?shop=demo.myshopify.com&host=abc",
+    );
+  });
+});
+
+describe("Products and Locations, before they moved under MetaKocka", () => {
+  it("sends each old address to its new one", () => {
+    const cases: Array<[typeof oldProducts, string, string]> = [
+      [oldProducts, "/app/products", "/app/metakocka/products"],
+      [oldProductSync, "/app/products/sync", "/app/metakocka/products/sync"],
+      [oldLocations, "/app/locations", "/app/metakocka/locations"],
+      [
+        oldLocationSettings,
+        "/app/locations/settings",
+        "/app/metakocka/locations/settings",
+      ],
+    ];
+
+    for (const [loader, from, to] of cases) {
+      const response = run(loader, `https://example.test${from}`, from);
+      expect(response.headers.get("location")).toBe(to);
+    }
+  });
+
+  it("keeps the product and the query string", () => {
+    const response = run(
+      oldProduct,
+      "https://example.test/app/products/123456?host=abc",
+      "/app/products/:productId",
+      { productId: "123456" },
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "/app/metakocka/products/123456?host=abc",
     );
   });
 });
@@ -186,7 +229,9 @@ describe("redirectWithin", () => {
     // Otherwise the note from one step follows the merchant through the whole
     // wizard, and the same banner is shown on every page after it.
     const response = redirectWithin(
-      new Request("https://example.test/app/setup?host=abc&note=old&step=orders"),
+      new Request(
+        "https://example.test/app/setup?host=abc&note=old&step=orders",
+      ),
       "/app",
       { note: undefined, step: undefined },
     );
