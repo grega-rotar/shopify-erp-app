@@ -2,8 +2,11 @@ import type { Job } from "pg-boss";
 
 import { isConfigured } from "~/adapters/ai/openai.server";
 import { prisma } from "~/adapters/db/client.server";
+import { listFailures } from "~/adapters/db/repositories/translation-failures.server";
 import {
+  getSourceOverride,
   listLanguageSettings,
+  listOwnership,
   wroteResourceSince,
 } from "~/adapters/db/repositories/translations.server";
 import { getLogger } from "~/adapters/observability/logger.server";
@@ -14,6 +17,8 @@ import {
   parseProductDelete,
 } from "~/adapters/shopify/product-payload";
 import { unauthenticated } from "~/adapters/shopify/shopify.server";
+import { readTranslatableResourcesByIds } from "~/adapters/shopify/translations";
+import { automaticWorkFor } from "~/adapters/translations/engine.server";
 import { collectChangedResource } from "~/adapters/translations/syncs.server";
 import type { SyncMode } from "~/domain/translations/types";
 import { serviceToken } from "~/domain/types";
@@ -29,6 +34,11 @@ import { serviceToken } from "~/domain/types";
  * outdated ones where the language asks for that. A language's overwrite
  * policy applies unchanged: an edit a person made is never replaced from
  * here.
+ *
+ * Most of these webhooks are a stock level, a price or a metafield, which
+ * leave the product's own text as it was. The product is read and planned
+ * first, and collected only for the languages where the sync would write
+ * something; a product whose text did not change opens no sync.
  *
  * Shopify also sends this webhook when *this app* registers a product's
  * translations. That echo is recognised by the ownership record the engine
@@ -95,16 +105,58 @@ export async function handleTranslationResourceEvent(
   if (!primary) return;
   const enabled = new Set(locales.locales.map((locale) => locale.locale));
 
+  const languages = automatic.filter(
+    (language) =>
+      enabled.has(language.locale) && language.locale !== primary.locale,
+  );
+  if (languages.length === 0) return;
+
+  // Most product webhooks are a stock level, a price or a metafield: the
+  // product's own text is as it was and nothing would be translated. Plan it
+  // now, as the sync would, and collect it only for the languages where
+  // something would be written — otherwise every stock sync keeps a
+  // translation sync open for nothing.
+  const [resource] = await readTranslatableResourcesByIds(admin, {
+    ids: [productId],
+    locales: languages.map((language) => language.locale),
+  });
+  if (!resource) return;
+  const [ownership, override, failures] = await Promise.all([
+    listOwnership(principal, [productId]),
+    getSourceOverride(principal, productId),
+    listFailures(principal, productId),
+  ]);
+  const now = new Date();
+
   // One sync per mode: a language that wants outdated translations refreshed
   // and one that does not cannot share a plan.
   const byMode = new Map<SyncMode, string[]>();
-  for (const language of automatic) {
-    if (!enabled.has(language.locale) || language.locale === primary.locale)
-      continue;
+  for (const language of languages) {
     const mode: SyncMode = language.autoUpdateOutdated
       ? "missing_outdated"
       : "missing";
+    const work = automaticWorkFor({
+      resource,
+      resourceType: "PRODUCT",
+      locale: language.locale,
+      primaryLocale: primary.locale,
+      override,
+      ownership: ownership.get(productId) ?? [],
+      settings: language,
+      mode,
+      failure: failures.get(language.locale),
+      now,
+    });
+    if (!work) continue;
     byMode.set(mode, [...(byMode.get(mode) ?? []), language.locale].sort());
+  }
+
+  if (byMode.size === 0) {
+    log.debug(
+      { shop: shopDomain, productId },
+      "Product change leaves nothing to translate",
+    );
+    return;
   }
 
   for (const [mode, targetLocales] of byMode) {

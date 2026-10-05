@@ -8,6 +8,7 @@ import {
   type HeadersFunction,
   type LoaderFunctionArgs,
 } from "react-router";
+import { z } from "zod";
 
 import type { ExceptionKind } from "@prisma/client";
 
@@ -26,12 +27,16 @@ import {
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import { formatDateTime } from "~/web/lib/datetime";
 import {
+  areaOfKind,
+  ATTENTION_AREAS,
   describeExceptionKind,
   EXCEPTIONS_PAGE_SIZE,
+  isAttentionArea,
   limitParamFor,
   parseExceptionsLimit,
 } from "~/web/lib/exceptions";
 import { principalFromSession } from "~/web/lib/principal.server";
+import { TRANSLATION_ROUTES } from "~/web/lib/translations";
 
 /**
  * The exceptions queue (CLAUDE.md §11).
@@ -61,6 +66,50 @@ function campaignIdOf(detail: unknown): string | null {
   return typeof id === "string" && id !== "" ? id : null;
 }
 
+const translationDetailSchema = z.object({
+  syncId: z.string().min(1).optional(),
+  resourceId: z.string().min(1).optional(),
+  resourceType: z.string().min(1).optional(),
+  title: z.string().optional(),
+  locales: z.array(z.string()).optional(),
+});
+
+/**
+ * What a translation exception is about: the resource, opened in the editor
+ * in the language that failed, and the sync that found it. Rows raised
+ * before resources were named carry only the sync.
+ */
+function translationLinksOf(detail: unknown): {
+  subject: { label: string; href: string } | null;
+  syncHref: string | null;
+} {
+  const parsed = translationDetailSchema.safeParse(detail);
+  if (!parsed.success) return { subject: null, syncHref: null };
+  const { syncId, resourceId, resourceType, title, locales } = parsed.data;
+  const syncHref = syncId ? TRANSLATION_ROUTES.sync(syncId) : null;
+  if (!resourceId || !resourceType) return { subject: null, syncHref };
+  const search = new URLSearchParams({
+    locale: locales?.[0] ?? "",
+    type: resourceType,
+    resource: resourceId,
+    rtype: resourceType,
+  });
+  return {
+    subject: {
+      label: title || resourceId,
+      href: `${TRANSLATION_ROUTES.editor}?${search.toString()}`,
+    },
+    syncHref,
+  };
+}
+
+/** The first column names what a row is about, which is an order for most kinds. */
+function subjectHeading(kind: string): string {
+  if (kind === "translation_failed") return "Content";
+  if (kind.startsWith("sale_")) return "Campaign";
+  return "Order";
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const principal = principalFromSession(session);
@@ -82,6 +131,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       orderNumber: row.order?.shopifyOrderNumber ?? null,
       // A sale campaign's exception belongs to the campaign, not to an order.
       campaignId: campaignIdOf(row.detail),
+      // A translation exception belongs to a product or page, and a sync.
+      ...(row.kind === "translation_failed"
+        ? translationLinksOf(row.detail)
+        : { subject: null, syncHref: null }),
       // What has already been tried, so a retry that keeps failing stops
       // looking like a button that does not work.
       attempts: row.attempts,
@@ -100,11 +153,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
    * open exception gets its own section and its own `limit_<kind>` page size,
    * so loading more of one never hides or resets another.
    */
-  const kinds = [...counts.keys()].sort(
-    // Biggest first: the thing that has gone wrong most is the thing worth
-    // dealing with first, and it is usually one fix for all of them.
-    (a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0),
-  );
+  /*
+   * Home links here by area (`?area=orders`): one row there is that area's
+   * kinds here. An area this page does not know is ignored rather than
+   * showing an empty page.
+   */
+  const requestedArea = url.searchParams.get("area") ?? "";
+  const area = isAttentionArea(requestedArea) ? requestedArea : null;
+
+  const kinds = [...counts.keys()]
+    .filter((kind) => area === null || areaOfKind(kind) === area)
+    .sort(
+      // Biggest first: the thing that has gone wrong most is the thing worth
+      // dealing with first, and it is usually one fix for all of them.
+      (a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0),
+    );
 
   const groups = await Promise.all(
     kinds.map(async (kind) => {
@@ -127,7 +190,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const total = [...counts.values()].reduce((sum, n) => sum + n, 0);
 
-  return { groups, total, resolved: shape(resolved) };
+  return {
+    groups,
+    total,
+    area: area ? { key: area, label: ATTENTION_AREAS[area].label } : null,
+    resolved: shape(resolved),
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -260,7 +328,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Exceptions() {
-  const { groups, total, resolved } = useLoaderData<typeof loader>();
+  const { groups, total, area, resolved } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state === "submitting";
@@ -279,6 +347,18 @@ export default function Exceptions() {
           >
             <s-paragraph>{result.message}</s-paragraph>
           </s-banner>
+        ) : null}
+
+        {/* Reached from a Home row: say what is left out, and how to see it. */}
+        {area && total > 0 ? (
+          <s-stack direction="inline" gap="small-300" alignItems="center">
+            <s-text color="subdued">
+              {groups.length > 0
+                ? `Showing ${area.label.toLowerCase()} only.`
+                : `Nothing in ${area.label.toLowerCase()} needs attention now.`}
+            </s-text>
+            <s-link href="/app/exceptions">{`Show all ${total}`}</s-link>
+          </s-stack>
         ) : null}
 
         {total === 0 ? (
@@ -338,6 +418,9 @@ export default function Exceptions() {
                          * or hides another that the merchant already expanded.
                          */}
                         <Form method="get">
+                          {area ? (
+                            <input type="hidden" name="area" value={area.key} />
+                          ) : null}
                           {groups.map((g) => (
                             <input
                               key={g.kind}
@@ -420,7 +503,7 @@ export default function Exceptions() {
                     <s-table variant="auto">
                       <s-table-header-row>
                         <s-table-header listSlot="primary">
-                          Order
+                          {subjectHeading(group.kind)}
                         </s-table-header>
                         <s-table-header listSlot="secondary">
                           What happened
@@ -447,8 +530,16 @@ export default function Exceptions() {
                                 >
                                   Open campaign
                                 </s-link>
+                              ) : exception.subject ? (
+                                <s-link href={exception.subject.href}>
+                                  {exception.subject.label}
+                                </s-link>
                               ) : (
-                                <s-text color="subdued">No order</s-text>
+                                <s-text color="subdued">
+                                  {group.kind === "translation_failed"
+                                    ? "Not named"
+                                    : "No order"}
+                                </s-text>
                               )}
                             </s-table-cell>
 
@@ -482,6 +573,14 @@ export default function Exceptions() {
 
                             <s-table-cell>
                               <s-stack direction="inline" gap="small-500">
+                                {exception.syncHref ? (
+                                  <s-button
+                                    variant="tertiary"
+                                    href={exception.syncHref}
+                                  >
+                                    Open sync
+                                  </s-button>
+                                ) : null}
                                 {exception.orderId && group.retryable ? (
                                   <Form method="post">
                                     <input

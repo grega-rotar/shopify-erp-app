@@ -17,6 +17,7 @@ import {
   redriveOrder,
   type RedriveTarget,
 } from "~/adapters/queue/redrive.server";
+import { convertLegacyTranslationExceptions } from "~/adapters/translations/failure-notices.server";
 import { decideOrderTax } from "~/domain/tax/decide";
 import { serviceToken, type Principal } from "~/domain/types";
 
@@ -629,6 +630,14 @@ export async function handleRecheckExceptions(job: Job<unknown>): Promise<void> 
   const { shopDomain, limit } = recheckExceptionsJobSchema.parse(job.data ?? {});
   const principal = serviceToken(shopDomain, "recheck-exceptions");
   const log = getLogger();
+
+  // Translation rows raised one per sync are rewritten one per resource.
+  const converted = await convertLegacyTranslationExceptions(principal, limit);
+  if (converted > 0)
+    log.info(
+      { shop: shopDomain, converted },
+      "Translation exceptions rewritten per resource",
+    );
 
   const open = await prisma.exception.findMany({
     where: {

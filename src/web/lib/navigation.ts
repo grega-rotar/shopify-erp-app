@@ -22,7 +22,7 @@ export interface NavItem {
 export const APP_HOME = "/app";
 
 /**
- * Eight visible entries, in the order a merchant reaches for them. The admin
+ * Nine visible entries, in the order a merchant reaches for them. The admin
  * draws the list with no groups or dividers, so the order is the grouping:
  *
  *  1. **Needs attention** first: the one place everything in the app that
@@ -30,7 +30,9 @@ export const APP_HOME = "/app";
  *  2. **Orders** and **Sales**, the daily work. Orders sat behind the MetaKocka
  *     page for a while, which put the most-used page two clicks away and left
  *     no entry highlighted while it was open.
- *  3. **Metafields** and **Translations**, the catalogue's content.
+ *  3. **Products**, **Metafields** and **Translations**, the catalogue.
+ *     Products opens each product's workspace, where it is edited here
+ *     rather than in Shopify's product editor.
  *  4. **MetaKocka** and **Sources**, the two systems that feed the store.
  *     MetaKocka's page opens onto its products, locations and connection, and
  *     those live under `/app/metakocka/` so its entry is the one highlighted
@@ -43,6 +45,7 @@ export const APP_NAV: readonly NavItem[] = [
   { href: "/app/exceptions", label: "Needs attention" },
   { href: "/app/orders", label: "Orders" },
   { href: "/app/sales", label: "Sales" },
+  { href: "/app/products", label: "Products" },
   { href: "/app/product-setup", label: "Metafields" },
   { href: "/app/translations", label: "Translations" },
   { href: "/app/metakocka", label: "MetaKocka" },

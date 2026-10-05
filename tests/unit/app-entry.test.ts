@@ -195,6 +195,8 @@ describe("the primary navigation", () => {
     expect(entryFor("/app/orders/123")).toBe("Orders");
     expect(entryFor("/app/orders/settings/payments")).toBe("Orders");
     expect(entryFor("/app/sales/abc/variants")).toBe("Sales");
+    expect(entryFor("/app/products")).toBe("Products");
+    expect(entryFor("/app/products/123456")).toBe("Products");
     expect(entryFor("/app/product-setup/attributes")).toBe("Metafields");
     expect(entryFor("/app/translations/editor")).toBe("Translations");
     expect(entryFor("/app/metakocka/products/123456")).toBe("MetaKocka");

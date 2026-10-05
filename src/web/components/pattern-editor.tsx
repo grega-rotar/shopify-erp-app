@@ -87,6 +87,12 @@ export interface PatternEditorProps {
   /** What the pattern comes to for one real record, or null when there is none. */
   preview?: string | null;
   error?: string;
+  /**
+   * For a row that already states the name beside the control (a settings
+   * card): the label stays, for screen readers only, so the field is still
+   * named by it.
+   */
+  hideLabel?: boolean;
 }
 
 function isChip(node: Node): node is HTMLElement {
@@ -190,6 +196,7 @@ export function PatternEditor({
   rows: rowsFor,
   preview,
   error,
+  hideLabel = false,
 }: PatternEditorProps) {
   const labelId = `pattern-label-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const listId = `pattern-list-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
@@ -473,7 +480,11 @@ export function PatternEditor({
   return (
     // The list hangs off this, so it has to be the thing it is measured from.
     <s-stack direction="block" gap="small-300">
-      <s-text id={labelId} type="strong">
+      <s-text
+        id={labelId}
+        type="strong"
+        {...(hideLabel ? { accessibilityVisibility: "exclusive" } : {})}
+      >
         {label}
       </s-text>
 

@@ -62,6 +62,11 @@ Completed work belongs in Git history, not in this file.
   vendors, tags, categories, product data, prices and typed metafields, a
   preview that writes nothing, a product-side view, CSV export, and an audit
   trail on `event_log`
+- A product workspace (`docs/architecture.md` § Product workspace): a
+  Products list over the catalogue snapshot and, per product, overview,
+  details, variants, stock, translations and activity, editing the product's
+  own fields, prices, SKUs and barcodes in Shopify without touching a price
+  a campaign holds, and translations through the engine's ownership rules
 - Product setup (`docs/attributes.md`): a tree of product types beside the
   selected type, an attribute catalogue and sets with inheritance and
   exact-type exceptions, planned as one document per shop under a revision
@@ -282,6 +287,27 @@ current list. The ones a person may want to decide on:
 - **No database tests yet** for the ownership upsert and the sync cursor
   (T-01/T-04 apply).
 
+### T-28 — Product workspace: known limits
+
+- **Read in a browser only through a preview harness.** The page was
+  rendered with real Polaris and mock data, not against a store; the
+  Shopify operations are validated against the 2026-07 schema and covered
+  by unit tests with the adapters replaced. Walk it on the real store.
+- **Up to 100 variants.** Past that the page says so and the rest are
+  edited in Shopify.
+- **Not edited here:** media (shown, with alt text), category, collections,
+  options, stock quantities, metafields. Category and collections need
+  pickers; stock has one writer per location; metafields wait for product
+  setup's Shopify side (T-25).
+- **A product's type in the plan is derived**, from its category or its
+  product type, because the plan has no product assignments.
+- **The source is known only for products the export portal created in
+  review mode** (the `portal-source:` tag). Which fields a source's runs
+  overwrite is the portal's setting and is not in the contract, so the page
+  says the source may replace content rather than naming fields.
+- **The Products list reads the catalogue snapshot**, so a product created
+  since the last `products/update` or nightly read appears after it.
+
 ### T-25 — Product setup: a plan with no Shopify side yet
 
 - **Nothing is created in Shopify.** The schema names a Shopify field per
@@ -313,7 +339,8 @@ fulfilment state and needs real Shopify fixture/contract verification.
 No Shopify product mutation exists. SKU, price, tax, weight, dimensions, and
 barcode do not currently flow from MetaKocka to Shopify despite the target
 ownership table in build-spec section 8.9. Decide whether this is v1 or phase 2.
-`write_products` is otherwise unused.
+`write_products` is otherwise used for sale prices, approving reviewed
+products and the product workspace's merchant edits.
 
 ### T-10 — Tracking sync is blocked on MetaKocka evidence
 

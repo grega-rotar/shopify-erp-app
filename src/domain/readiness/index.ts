@@ -481,7 +481,7 @@ function productsOf(facts: ReadinessFacts): ReadinessComponent {
     summary:
       matched + unmatched === 0
         ? "Not matched yet"
-        : `${matched} of ${matched + unmatched} matched`,
+        : `${matched.toLocaleString("en")} of ${(matched + unmatched).toLocaleString("en")} SKUs matched`,
     reason:
       unmatched > 0
         ? `${unmatched} Shopify ${plural(unmatched, "SKU has", "SKUs have")} no MetaKocka product, so ${plural(unmatched, "an order", "orders")} containing ${plural(unmatched, "it", "them")} cannot be sent.`

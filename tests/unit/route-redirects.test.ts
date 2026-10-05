@@ -4,9 +4,8 @@ import { RouterContextProvider, type LoaderFunctionArgs } from "react-router";
 import { loader as salesOrders } from "~/web/routes/app.settings.sales-orders";
 import { loader as payments } from "~/web/routes/app.settings.payments";
 import { loader as supplySources } from "~/web/routes/app.settings.supply-sources._index";
-import { loader as oldProducts } from "~/web/routes/app.products._index";
+import { loader as oldProductView } from "~/web/routes/app.metakocka.products.$productId";
 import { loader as oldProductSync } from "~/web/routes/app.products.sync";
-import { loader as oldProduct } from "~/web/routes/app.products.$productId";
 import { loader as oldLocations } from "~/web/routes/app.locations._index";
 import { loader as oldLocationSettings } from "~/web/routes/app.locations.settings";
 import { redirectWithin } from "~/web/lib/redirects";
@@ -105,8 +104,7 @@ describe("old settings routes", () => {
 
 describe("Products and Locations, before they moved under MetaKocka", () => {
   it("sends each old address to its new one", () => {
-    const cases: Array<[typeof oldProducts, string, string]> = [
-      [oldProducts, "/app/products", "/app/metakocka/products"],
+    const cases: Array<[typeof oldProductSync, string, string]> = [
       [oldProductSync, "/app/products/sync", "/app/metakocka/products/sync"],
       [oldLocations, "/app/locations", "/app/metakocka/locations"],
       [
@@ -122,16 +120,16 @@ describe("Products and Locations, before they moved under MetaKocka", () => {
     }
   });
 
-  it("keeps the product and the query string", () => {
+  it("sends the old product view to the product workspace, keeping the query string", () => {
     const response = run(
-      oldProduct,
-      "https://example.test/app/products/123456?host=abc",
-      "/app/products/:productId",
+      oldProductView,
+      "https://example.test/app/metakocka/products/123456?host=abc",
+      "/app/metakocka/products/:productId",
       { productId: "123456" },
     );
 
     expect(response.headers.get("location")).toBe(
-      "/app/metakocka/products/123456?host=abc",
+      "/app/products/123456?host=abc&tab=variants",
     );
   });
 });

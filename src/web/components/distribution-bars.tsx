@@ -3,7 +3,7 @@
  * were filed against.
  *
  * A row, a bar and a number, built from `s-box` and Polaris tokens. No chart
- * library, for the same reason `order-chart` has none: a second design system
+ * library, because a second design system
  * inside a Polaris page is a rejection reason (docs/BUILD_SPEC.md section 2.6),
  * and this is five rows.
  *

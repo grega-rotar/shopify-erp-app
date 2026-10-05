@@ -202,6 +202,8 @@ export interface SkuRow {
   priceMinor: number | null;
   currency: string | null;
   vendor: string | null;
+  /** The Shopify product the SKU's variant belongs to, when known. */
+  shopifyProductId: string | null;
   status: Sku["status"];
   metakockaName: string | null;
   metakockaMkId: string | null;
@@ -254,6 +256,7 @@ export async function listSkuPage(
       priceMinor: true,
       currency: true,
       vendor: true,
+      shopifyProductId: true,
       status: true,
       metakockaName: true,
       metakockaMkId: true,
@@ -276,6 +279,7 @@ export async function listSkuPage(
     priceMinor: row.priceMinor,
     currency: row.currency,
     vendor: row.vendor,
+    shopifyProductId: row.shopifyProductId,
     status: row.status,
     metakockaName: row.metakockaName,
     metakockaMkId: row.metakockaMkId,

@@ -1,3 +1,5 @@
+import type { ExceptionKind } from "@prisma/client";
+
 /**
  * What each exception kind means, in the merchant's words.
  *
@@ -205,7 +207,7 @@ const COPY: Record<string, ExceptionCopy> = {
     label: "Translation not finished",
     short: "whose translation could not be finished",
     guidance:
-      "A translation sync stopped, or some content could not be translated after retries. The sync page lists each resource with the reason; fix what it names, or run the translation again. Nothing already translated is affected.",
+      "One row per product or page that could not be translated, with the language and the reason. Open it to translate it again in the editor, or open the sync for the details. A row closes by itself once the content translates; automatic translation retries after 1, 3 and 7 days. Nothing already translated is affected.",
   },
 };
 
@@ -242,14 +244,26 @@ const ACTIONS: Record<string, ExceptionAction> = {
     label: "Configure payments",
     href: "/app/orders/settings/payments",
   },
-  unmapped_location: { label: "Configure location", href: "/app/metakocka/locations" },
-  warehouse_invalid: { label: "Configure location", href: "/app/metakocka/locations" },
+  unmapped_location: {
+    label: "Configure location",
+    href: "/app/metakocka/locations",
+  },
+  warehouse_invalid: {
+    label: "Configure location",
+    href: "/app/metakocka/locations",
+  },
   profit_center_rejected: {
     label: "Configure location",
     href: "/app/metakocka/locations",
   },
-  stock_sync_failed: { label: "Open locations", href: "/app/metakocka/locations" },
-  sku_not_in_metakocka: { label: "Open products", href: "/app/metakocka/products" },
+  stock_sync_failed: {
+    label: "Open locations",
+    href: "/app/metakocka/locations",
+  },
+  sku_not_in_metakocka: {
+    label: "Open products",
+    href: "/app/metakocka/products",
+  },
   commercial_representation_missing: {
     label: "Open order settings",
     href: "/app/orders/settings",
@@ -278,6 +292,159 @@ const ACTIONS: Record<string, ExceptionAction> = {
 
 export function exceptionAction(kind: string): ExceptionAction | null {
   return ACTIONS[kind] ?? null;
+}
+
+/**
+ * The part of the store each kind of problem belongs to.
+ *
+ * Home says how many problems each area has, not what each problem is: a
+ * list of individual records ("This store — 1 fields could not be
+ * translated", forty times) buried the one thing Home is for, which is
+ * where to go next. The records and their guidance stay on the Needs
+ * attention page, which filters to one of these areas by `?area=`.
+ *
+ * Keyed by the schema's enum, so a new kind does not compile until it has
+ * an area.
+ */
+export type AttentionArea =
+  | "orders"
+  | "payments"
+  | "taxes"
+  | "products"
+  | "inventory"
+  | "sales"
+  | "translations"
+  | "background";
+
+const AREA_OF_KIND: Record<ExceptionKind, AttentionArea> = {
+  insufficient_stock: "orders",
+  metakocka_write_failed: "orders",
+  fulfillment_split_failed: "orders",
+  order_cancelled: "orders",
+  order_edited: "orders",
+  order_diverged: "orders",
+  sync_inconsistent: "orders",
+  metakocka_document_missing: "orders",
+  metakocka_document_changed: "orders",
+  commercial_representation_missing: "orders",
+  unmapped_payment_gateway: "payments",
+  partially_paid: "payments",
+  voided_payment: "payments",
+  refund_received: "payments",
+  payment_write_failed: "payments",
+  payment_unallocated: "payments",
+  tax_undeterminable: "taxes",
+  tax_mapping_missing: "taxes",
+  tax_treatment_unknown: "taxes",
+  tax_reconciliation_failed: "taxes",
+  tax_data_insufficient: "taxes",
+  vat_registration_configuration_error: "taxes",
+  sku_not_in_metakocka: "products",
+  stock_sync_failed: "inventory",
+  unmapped_location: "inventory",
+  warehouse_invalid: "inventory",
+  profit_center_rejected: "inventory",
+  sale_price_conflict: "sales",
+  sale_apply_failed: "sales",
+  sale_restore_failed: "sales",
+  translation_failed: "translations",
+  job_failed: "background",
+};
+
+export interface AttentionAreaCopy {
+  label: string;
+  /** One sentence, the problem in the merchant's words. */
+  text: string;
+  /** The link to that area's records. */
+  cta: string;
+}
+
+/** In the order Home lists them when their counts tie. */
+export const ATTENTION_AREAS: Record<AttentionArea, AttentionAreaCopy> = {
+  orders: {
+    label: "Orders",
+    text: "Orders that could not be sent, or no longer match MetaKocka.",
+    cta: "Review orders",
+  },
+  payments: {
+    label: "Payments",
+    text: "Payments and refunds MetaKocka has not recorded.",
+    cta: "Review payments",
+  },
+  taxes: {
+    label: "Taxes",
+    text: "Orders held because their VAT cannot be filed safely.",
+    cta: "Review taxes",
+  },
+  products: {
+    label: "Products",
+    text: "Orders contain SKUs MetaKocka does not have.",
+    cta: "Review products",
+  },
+  inventory: {
+    label: "Inventory",
+    text: "Stock is not moving for a location, or a location is not mapped.",
+    cta: "Review inventory",
+  },
+  sales: {
+    label: "Sales",
+    text: "Sale prices that were not applied or put back, or need a decision.",
+    cta: "Review sales",
+  },
+  translations: {
+    label: "Translations",
+    text: "Some content could not be translated.",
+    cta: "Review translations",
+  },
+  background: {
+    label: "Background work",
+    text: "Background work stopped after its retries and will not run again on its own.",
+    cta: "Review",
+  },
+};
+
+const AREA_ORDER = Object.keys(ATTENTION_AREAS) as AttentionArea[];
+
+export function isAttentionArea(value: string): value is AttentionArea {
+  return value in ATTENTION_AREAS;
+}
+
+/** The area a kind belongs to. A kind the schema does not know is background work. */
+export function areaOfKind(kind: string): AttentionArea {
+  return (AREA_OF_KIND as Record<string, AttentionArea>)[kind] ?? "background";
+}
+
+export interface AttentionGroup extends AttentionAreaCopy {
+  area: AttentionArea;
+  count: number;
+  href: string;
+}
+
+/**
+ * Open exceptions by kind, folded into one row per area: largest first, and
+ * no row at all for an area with nothing open.
+ */
+export function attentionGroups(
+  byKind: ReadonlyArray<{ kind: string; count: number }>,
+): AttentionGroup[] {
+  const counts = new Map<AttentionArea, number>();
+  for (const { kind, count } of byKind) {
+    if (count <= 0) continue;
+    const area = areaOfKind(kind);
+    counts.set(area, (counts.get(area) ?? 0) + count);
+  }
+  return [...counts.entries()]
+    .map(([area, count]) => ({
+      area,
+      count,
+      href: `/app/exceptions?area=${area}`,
+      ...ATTENTION_AREAS[area],
+    }))
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        AREA_ORDER.indexOf(a.area) - AREA_ORDER.indexOf(b.area),
+    );
 }
 
 /** How many open exceptions one category loads at once, and grows by on "Load more". */

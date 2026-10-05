@@ -405,7 +405,7 @@ export default function CampaignVariants() {
                   {rows.map((row) => (
                     <s-table-row key={row.id}>
                       <s-table-cell>
-                        <s-link href={`/app/metakocka/products/${row.productNumber}`}>
+                        <s-link href={`/app/products/${row.productNumber}?tab=variants`}>
                           {row.title}
                         </s-link>
                       </s-table-cell>

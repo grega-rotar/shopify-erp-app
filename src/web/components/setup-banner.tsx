@@ -4,17 +4,14 @@ import type { ReadinessComponent } from "~/domain/readiness";
  * The one banner for a shop that has not pressed Finish setup, shared by Home
  * and the settings hub so they cannot say two different things.
  *
- * It used to say "nothing is written to MetaKocka" whatever the state of the
- * configuration — true, but it read as an alarm on a shop where every
- * required answer was in and the only things not running were the ones the
- * merchant had switched off. So the banner now says what is actually the
- * case: either something still needs answering, named, or everything required
- * is ready and one press starts it, with what stays off said in passing
- * rather than as a warning.
+ * It states the one fact that matters — nothing synchronizes until setup is
+ * finished — and then each part of setup in a single line, ticked or not, so
+ * what is left is readable at a glance instead of from a sentence. A part the
+ * merchant switched off says "off", which is an answer, not a gap.
  *
  * Nothing here decides anything: readiness is `domain/readiness`, and
  * `activated` is `shop.setup_completed_at` (docs/ui-conventions.md § Setup
- * state).
+ * state). The caller renders this only while `activated` is false.
  */
 export function SetupBanner({
   components,
@@ -23,41 +20,65 @@ export function SetupBanner({
   components: ReadinessComponent[];
   overall: "ready" | "needs_attention";
 }) {
-  const missing = components.filter(
-    (component) => component.required && component.status === "needs_attention",
+  // Products is optional and never part of setup.
+  const steps = components.filter(
+    (component) => component.status !== "optional",
   );
-  const off = components.filter((component) => component.status === "disabled");
-
-  if (overall === "needs_attention" && missing.length > 0) {
-    return (
-      <s-banner tone="warning" heading="Setup is not finished">
-        <s-paragraph>
-          {`${list(missing.map((component) => component.title))} ${missing.length === 1 ? "needs" : "need"} answering before synchronization can start. Whatever you have already answered is saved.`}
-        </s-paragraph>
-        <s-link slot="primary-action" href="/app/setup">
-          Finish setup
-        </s-link>
-      </s-banner>
-    );
-  }
+  const ready = overall === "ready";
 
   return (
-    <s-banner tone="info" heading="Ready to start">
-      <s-paragraph>
-        {`Everything required is in. Finish setup to start synchronizing.${
-          off.length > 0
-            ? ` ${list(off.map((component) => component.title))} ${off.length === 1 ? "is" : "are"} switched off and ${off.length === 1 ? "stays" : "stay"} off.`
-            : ""
-        }`}
-      </s-paragraph>
-      <s-link slot="primary-action" href="/app/setup">
-        Finish setup
-      </s-link>
+    <s-banner tone={ready ? "info" : "warning"} heading="Finish setup">
+      <s-stack direction="block" gap="small-300">
+        <s-paragraph>
+          {ready
+            ? "Everything required is answered. Synchronization starts when you finish setup."
+            : "Synchronization won't start until setup is completed. Whatever you have answered is saved."}
+        </s-paragraph>
+        <s-stack direction="inline" gap="small-100 base" alignItems="center">
+          {steps.map((step) => (
+            <SetupStep key={step.key} step={step} />
+          ))}
+        </s-stack>
+      </s-stack>
+      {/* A banner's only action slot; "primary-action" is a page's, and in a banner it renders as body text. */}
+      <s-button slot="secondary-actions" href="/app/setup">
+        {ready ? "Finish setup" : "Continue setup"}
+      </s-button>
     </s-banner>
   );
 }
 
-function list(names: string[]): string {
-  if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+function SetupStep({ step }: { step: ReadinessComponent }) {
+  const missing = step.status === "needs_attention" && step.required;
+  const state =
+    step.status === "disabled"
+      ? "off"
+      : step.status === "needs_attention"
+        ? "needs an answer"
+        : "done";
+
+  return (
+    <s-stack direction="inline" gap="small-500" alignItems="center">
+      {step.status === "disabled" ? null : (
+        <s-icon
+          type={step.status === "needs_attention" ? "alert-circle" : "check"}
+          tone={
+            missing
+              ? "critical"
+              : step.status === "needs_attention"
+                ? "caution"
+                : "auto"
+          }
+          color={step.status === "needs_attention" ? "base" : "subdued"}
+          size="small"
+        />
+      )}
+      <s-text type={missing ? "strong" : "generic"}>{step.title}</s-text>
+      {step.status === "disabled" ? (
+        <s-text color="subdued">off</s-text>
+      ) : (
+        <s-text accessibilityVisibility="exclusive">{`, ${state}`}</s-text>
+      )}
+    </s-stack>
+  );
 }

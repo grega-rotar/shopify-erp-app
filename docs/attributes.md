@@ -6,10 +6,12 @@ the primary navigation, named for the whole job — product types, their
 attributes, reusable sets and the Shopify mappings — rather than for one of
 its tables.
 
-It is planning data. Nothing in this module reads or writes Shopify: the
-Shopify field key on an attribute names where a metafield definition would be
-created later, and the Shopify category on a type is a note. Turning the plan
-into definitions is a later piece of work, not a setting here.
+It is planning data. The product setup screens neither read nor write Shopify:
+the Shopify field key on an attribute names where a metafield definition would
+be created later, and the Shopify category on a type is a note. Turning the
+plan into definitions is a later piece of work, not a setting here. The one
+place the plan meets Shopify is the product page, where a person enters a
+product's values by hand (*On the product page*).
 
 ## Document
 
@@ -147,6 +149,40 @@ names what is being replaced. A rejected file changes nothing and the reason
 is shown. Files from the standalone builder import through the translation
 described under *Document*.
 
+## On the product page
+
+The product workspace (docs/architecture.md § Product workspace) reads the
+plan for one product. Its type is, in order: the type a person chose for it
+on the **Attributes** tab (`product_type_assignment`, one row per shop and
+product, ignored once the type leaves the plan or stops being assignable);
+the assignable type whose Shopify category is the product's category (name or
+full path); the one whose name or path is the product's Shopify product type.
+Two candidates are reported, not guessed between. Choosing a type saves at
+once (`choose-type`), and *Match automatically* removes the choice.
+
+The type's active attributes — inheritance, overrides and exclusions as
+`activeAttributes` resolves them — are shown grouped by set against the
+product's metafields under each attribute's Shopify field key, with the
+required ones counted (`attributeCompleteness`, `domain/products/workspace.ts`).
+A variant-level attribute is complete when every variant has it, and is
+entered per variant.
+
+Values are entered on the Attributes tab and saved with the page's save bar,
+in the same `save` as the product's other fields
+(`domain/products/attribute-values.ts`, `web/lib/product-attributes.server.ts`).
+The Shopify type each value is written as is, in order: the shop's metafield
+definition for that owner and key, the type of a value already stored, then
+the attribute's format (text and single select → single line text, multi
+select → list of single line text, integer, decimal, boolean, date; a
+measurement whose unit is a length, weight or volume Shopify knows → that
+measurement type, otherwise a decimal). A select stores option codes. A field
+this page cannot write faithfully — a reference, rich text, JSON, a list with
+no options, an unmapped or malformed key — shows what Shopify holds and why
+it is changed elsewhere. An emptied field deletes the metafield. The save
+re-reads the plan, the type and the live values, refuses when the type changed
+or a value it changes was changed in Shopify since the page loaded, and logs
+`product.details_edited` (and `product.type_chosen` for a choice).
+
 ## Known limits
 
 - No undo. Every destructive change is behind a confirmation instead, and the
@@ -160,4 +196,8 @@ described under *Document*.
 - The requirement per row saves as soon as it is changed; the type dialog's
   details and the attribute forms save with their own button, and closing a
   dialog discards what was not saved.
-- Nothing is created in Shopify from the plan yet.
+- Nothing is created in Shopify from the plan yet: no metafield definitions,
+  so values written without one are untyped metafields until a definition
+  exists. Values are entered one product at a time; there is no bulk entry.
+- A save of more than 25 values is several `metafieldsSet` calls; a refusal
+  part way leaves the earlier batches written; a reload shows which.

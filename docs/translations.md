@@ -535,6 +535,13 @@ in a tooltip that the pointer or the arrow keys move.
 type, per (locale, type), with the same field test the planner uses — and
 leaves out the fields a language keeps in the original language.
 
+For a language with AI translation on, the languages overview and the
+language page's headline count only the content in its scope ("What gets
+translated"): a group taken out — metafields, say — is left alone, not
+owed, so its missing and outdated fields do not keep the language looking
+unfinished. The language page still lists the group, marked "Not
+translated". A language with AI off counts everything.
+
 A count runs in **chunks**: each pass reads ten pages of fifty resources of
 the current type and re-enqueues itself with the cursor and that type's
 counts so far in the job data (`readCoverageChunk`). A type read whole
@@ -577,7 +584,7 @@ tokens are still recorded.
 | ---------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `translation-sync`           | `startSync` from a page or the nightly tick; itself, per page  | One page (10 resources) of the current type through the engine, records items, advances cursor, re-enqueues; checks for cancel between pages; completes, marks the languages' last successful sync, asks for coverage |
 | `translation-coverage`       | `requestCoverageRefresh`: a person's or the nightly sync completing, delete all, page buttons, nightly; itself, per chunk | Ten pages of the current type; a finished type replaces its rows; moves the progress row; re-enqueues with cursor and carried counts |
-| `translation-resource-event` | `products/create`, `products/update` webhooks                  | Puts the product on the collecting `resource` sync for every language with automatic translation on (one per mode); drops the echo of this app's own write |
+| `translation-resource-event` | `products/create`, `products/update` webhooks                  | Plans the product for every language with automatic translation on and puts it on the collecting `resource` sync (one per mode) only where something would be written; drops the echo of this app's own write |
 | `translation-profile`        | Store context page: Build now / Read the store again           | `ensureStoreProfile` with `force`: re-reads the snapshot, rebuilds the profile, rediscovers the terms   |
 | `translation-remove`         | Language page: Delete all translations, or saving settings that switch content off; itself, per page | One page (50 resources) of the current type: `translationsRemove` for every key translated in the language — or, with a `scope`, only the scope's keys the AI wrote and nobody touched (§ Switched off) — forgets ownership and remembered failures; re-enqueues with its cursor in the job data; asks for coverage at the end |
 
@@ -585,8 +592,8 @@ tokens are still recorded.
 key per sync holds; the cursor moves only over recorded work, so a retried
 pass repeats a page rather than skipping one, and every write to Shopify is a
 replace. A sync untouched for six hours is marked failed by the quarter-hourly
-tick. A sync that finished with failed fields raises one `translation_failed`
-exception linking to the syncs page.
+tick. A sync that could not run raises one `translation_failed` exception
+for the sync; failed fields are raised per resource (§ Failures).
 
 The nightly tick starts one `automatic` sync per shop and mode over the
 content scope of every language with automatic translation on — which is what
@@ -606,6 +613,16 @@ sync's singleton key. `beginSyncPass` claims the sync before it reads it,
 so the pass sees every product that arrived; a sync that has started takes
 no more, and the next change opens the next one. A `resource` sync pages
 through its list ten at a time, the cursor's `after` being the offset.
+
+Most of these webhooks change no text at all: a stock level, a price or a
+metafield (a metafield change sends `products/update` too, and metafields
+are their own resources, in their own content group). So before collecting,
+the handler reads the product's translatable content and plans it for each
+automatic language as the sync would (`automaticWorkFor` in the engine:
+kept fields, overwrite policy, mode, and a failure still backing off all
+apply). A product is collected only for the languages where something would
+be written; one whose text did not change opens no sync and costs one
+Shopify read.
 
 Two things keep the list honest. The webhook Shopify sends when *this app*
 registers a product's translations is the echo of that write: a product the
@@ -633,6 +650,18 @@ failure matches the current source, with the reason `failed_before`, for 1,
 then 3, then 7 days after consecutive failures, and after the fourth not at
 all until the source changes. A sync a person started and the editor always
 try. A success, and **Delete all translations**, forget the failure.
+
+A failure is shown on Needs attention as **one row per resource**
+(`translation_failed`, dedupe key `translation-resource:<id>`,
+`domain/translations/failure-notice`): the resource's name, linking to it
+in the editor in the language that failed, the languages and the reason,
+and a link to the sync. Failing again updates the same row; the sync job
+closes it (resolved by `app`) once the resource translates and no failure
+is remembered for it. It used to be one row per sync — "1 fields could not
+be translated in a sync" — and collected webhook syncs made thousands that
+named nothing. `recheck-exceptions` rewrites those older rows per resource
+in batches (`convertLegacyTranslationExceptions`), skipping resources that
+have translated since, and closes them.
 
 ### Delete all translations
 

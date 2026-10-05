@@ -721,9 +721,7 @@ function ReviewRow({
             ) : null}
           </s-box>
           <s-stack direction="block" gap="none">
-            <s-link href={`shopify://admin/products/${row.legacyId}`}>
-              {row.title}
-            </s-link>
+            <s-link href={`/app/products/${row.legacyId}`}>{row.title}</s-link>
             {row.vendor ? <s-text color="subdued">{row.vendor}</s-text> : null}
           </s-stack>
         </s-stack>

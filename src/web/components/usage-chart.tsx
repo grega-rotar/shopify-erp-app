@@ -22,7 +22,7 @@ import {
  * or month, as cost, tokens or requests, with a real axis and a tooltip
  * that says what the bar is.
  *
- * Inline SVG, for the reason `order-chart` gives: a charting library is a
+ * Inline SVG, because a charting library is a
  * second design system inside a Polaris page (docs/BUILD_SPEC.md section
  * 2.6). Colours are Polaris custom properties with the admin's greys as
  * fallbacks, so the chart follows the palette; nothing on it is coloured,

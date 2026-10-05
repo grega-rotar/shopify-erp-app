@@ -3,6 +3,13 @@ import type { ReactNode } from "react";
 import type { Field, FieldValues } from "~/domain/export-portal/contract";
 import { groupFields, inputValue, isOn } from "~/domain/export-portal/fields";
 import { Dropdown } from "~/web/components/dropdown";
+import { PatternEditor } from "~/web/components/pattern-editor";
+import {
+  tokenError,
+  tokenPreview,
+  tokenRegistry,
+  tokenRows,
+} from "~/web/lib/portal-field-tokens";
 import { leadingSwitch, shortLabel } from "~/web/lib/sources";
 
 /**
@@ -292,6 +299,30 @@ export function PortalField({
         />,
       );
     case "text":
+      // A field the portal says takes `{fields}` gets the pattern editor the
+      // MetaKocka name uses — chips picked from a list, the whole width, and
+      // under it what the portal's sample product would get.
+      if (field.tokens && field.tokens.length > 0) {
+        const tokens = field.tokens;
+        const preview = tokenPreview(field, value);
+        const problem = error ?? tokenError(field, value);
+        return (
+          <>
+            <PatternEditor
+              label={field.label}
+              hideLabel={bare}
+              value={value}
+              onChange={onChange}
+              registry={tokenRegistry(tokens)}
+              rows={(query) => tokenRows(tokens, query)}
+              {...(help ? { details: help } : {})}
+              {...(preview ? { preview } : {})}
+              {...(problem ? { error: problem } : {})}
+            />
+            <input type="hidden" name={field.key} value={value} />
+          </>
+        );
+      }
       return capped(
         "520px",
         <s-text-field

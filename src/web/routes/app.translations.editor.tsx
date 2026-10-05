@@ -14,15 +14,9 @@ import { z } from "zod";
 import { detectLanguage, isConfigured } from "~/adapters/ai/openai.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
-  forgetMemory,
-  rememberTranslations,
-} from "~/adapters/db/repositories/translation-intelligence.server";
-import {
-  forgetOwnership,
   getLanguageSettings,
   getSourceOverride,
   listOwnership,
-  recordOwnership,
   setSourceOverride,
   recordDetectedSource,
 } from "~/adapters/db/repositories/translations.server";
@@ -35,20 +29,20 @@ import {
   readResourceCards,
   readTranslatableResources,
   readTranslatableResourcesByIds,
-  registerTranslations,
-  removeTranslations,
   resourceTitle,
   searchResourceIds,
   type TranslatableResource,
 } from "~/adapters/shopify/translations";
 import { ContextSource } from "~/adapters/translations/context.server";
+import {
+  saveTranslationEdits,
+  translateForPerson,
+} from "~/adapters/translations/edits.server";
 import { hashValue } from "~/adapters/translations/engine.server";
-import { translateResourceNow } from "~/adapters/translations/inline.server";
 import {
   describeConfidence,
   detectionSample,
 } from "~/domain/translations/detection";
-import { isMemorable, memoryKey } from "~/domain/translations/memory";
 import { classifyField, isTranslatableField } from "~/domain/translations/plan";
 import {
   ALL_CONTENT_GROUPS,
@@ -678,120 +672,13 @@ export const action = async ({
         ok: false,
         message: "The form could not be read. Reload the page and try again.",
       };
-    const { resource, type, locale, fields } = parsed.data;
-
-    const writes = fields.filter((field) => field.value.trim() !== "");
-    const removals = fields.filter((field) => field.value.trim() === "");
-
-    // A person's translation is the strongest signal memory gets: it is
-    // reused for the same string and shown to the model for related ones.
-    const [locales, sourceRead, override] = await Promise.all([
-      listShopLocales(admin),
-      readTranslatableResourcesByIds(admin, { ids: [resource], locales: [] }),
-      getSourceOverride(principal, resource),
-    ]);
-    const primaryLocale =
-      locales.kind === "read"
-        ? (locales.locales.find((l) => l.primary)?.locale ?? null)
-        : null;
-    const sourceLocale = override?.sourceLocale ?? primaryLocale;
-    const sourceFields = new Map(
-      (sourceRead[0]?.fields ?? []).map((field) => [field.key, field]),
-    );
-
-    if (writes.length > 0) {
-      const written = await registerTranslations(
-        admin,
-        resource,
-        writes.map((field) => ({
-          key: field.key,
-          locale,
-          value: field.value,
-          digest: field.digest,
-        })),
-      );
-      if (written.kind === "rejected")
-        return {
-          ok: false,
-          message: `Shopify refused the translation: ${written.messages.join("; ")}`,
-        };
-      await recordOwnership(
-        principal,
-        writes.map((field) => ({
-          resourceId: resource,
-          resourceType: type,
-          key: field.key,
-          locale,
-          owner: "manual" as const,
-          valueHash: hashValue(field.value),
-          sourceDigest: field.digest,
-          syncId: null,
-          writtenBy: actor,
-        })),
-        new Date(),
-      );
-      if (sourceLocale && sourceLocale !== locale) {
-        const pairs = writes.flatMap((field) => {
-          const source = sourceFields.get(field.key);
-          if (!source || !isMemorable(source)) return [];
-          return [
-            {
-              sourceLocale,
-              targetLocale: locale,
-              sourceKey: memoryKey(source.value),
-              sourceText: source.value.trim(),
-              targetText: field.value.trim(),
-              resourceType: type,
-              resourceId: resource,
-            },
-          ];
-        });
-        await rememberTranslations(principal, pairs, "manual", new Date());
-      }
-    }
-    if (removals.length > 0) {
-      const removed = await removeTranslations(
-        admin,
-        resource,
-        [locale],
-        removals.map((field) => field.key),
-      );
-      if (removed.kind === "rejected")
-        return {
-          ok: false,
-          message: `Shopify refused: ${removed.messages.join("; ")}`,
-        };
-      await forgetOwnership(
-        principal,
-        resource,
-        locale,
-        removals.map((field) => field.key),
-      );
-      if (sourceLocale)
-        await forgetMemory(principal, {
-          sourceLocale,
-          targetLocale: locale,
-          sourceKeys: removals.flatMap((field) => {
-            const source = sourceFields.get(field.key);
-            return source ? [memoryKey(source.value)] : [];
-          }),
-        });
-    }
-    await appendEvent(principal, {
-      entityType: "translation",
-      entityId: resource,
-      event: "translation.edited",
-      detail: {
-        locale,
-        written: writes.length,
-        removed: removals.length,
-        by: actor,
-      },
+    return saveTranslationEdits(principal, admin, {
+      resource: parsed.data.resource,
+      type: parsed.data.type,
+      locale: parsed.data.locale,
+      fields: parsed.data.fields,
+      actor,
     });
-    return {
-      ok: true,
-      message: `Saved to Shopify: ${writes.length} ${writes.length === 1 ? "field" : "fields"}${removals.length > 0 ? `, ${removals.length} cleared` : ""}.`,
-    };
   }
 
   if (intent === "translate") {
@@ -803,52 +690,13 @@ export const action = async ({
       return { ok: false, message: "Unknown resource." };
     if (mode !== "missing" && mode !== "missing_outdated" && mode !== "force")
       return { ok: false, message: "Unknown action." };
-    if (!isConfigured())
-      return {
-        ok: false,
-        message: "AI translation is not configured on this server.",
-      };
-    const locales = await listShopLocales(admin);
-    const primary =
-      locales.kind === "read"
-        ? locales.locales.find((l) => l.primary)
-        : undefined;
-    if (!primary)
-      return {
-        ok: false,
-        message: "Languages could not be read from Shopify.",
-      };
-
-    const result = await translateResourceNow(principal, admin, {
-      resourceId: resource,
-      resourceType: typeParam,
-      primaryLocale: primary.locale,
-      targetLocales: [locale],
+    return translateForPerson(principal, admin, {
+      resource,
+      type: typeParam,
+      locales: [locale],
       mode,
-      requestedBy: actor,
+      actor,
     });
-    if (!result.found)
-      return {
-        ok: false,
-        message: "The resource could not be read from Shopify.",
-      };
-    const { translated, copied, skipped, failed } = result.outcome;
-    if (failed > 0)
-      return {
-        ok: false,
-        message:
-          result.outcome.items.find((item) => item.error)?.error ??
-          "The translation failed.",
-      };
-    if (translated + copied === 0)
-      return {
-        ok: true,
-        message: `Nothing to translate: ${skipped} fields already have a translation or are protected.`,
-      };
-    return {
-      ok: true,
-      message: `Translated ${translated} ${translated === 1 ? "field" : "fields"}${copied > 0 ? `, copied ${copied}` : ""}${skipped > 0 ? `, left ${skipped} as they were` : ""}.`,
-    };
   }
 
   if (intent === "set-source") {

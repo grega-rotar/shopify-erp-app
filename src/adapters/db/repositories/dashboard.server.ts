@@ -24,30 +24,18 @@ export interface DashboardCounts {
   paymentsToday: number;
   /** Products whose stock this app moved today, either direction. */
   stockUpdatesToday: number;
-}
-
-export interface DaySeriesPoint {
-  /** ISO date, midnight UTC. */
-  date: string;
-  received: number;
-  written: number;
-  needsAttention: number;
-}
-
-/** Where the window's sales orders were filed. */
-export interface WarehouseShare {
-  name: string;
-  count: number;
+  /** Orders received or allocated and not yet sent, whenever they arrived. */
+  waiting: number;
 }
 
 export interface DashboardData {
   counts: DashboardCounts;
-  /** Newest last, so a chart reads left to right. */
-  series: DaySeriesPoint[];
   openExceptionsByKind: { kind: string; count: number }[];
   lastMetakockaWriteAt: string | null;
   lastStockSyncAt: string | null;
   lastStockSyncOk: boolean | null;
+  /** When Shopify's catalogue was last matched against MetaKocka's. */
+  lastCatalogueMatchAt: string | null;
   /**
    * When orders were last checked against Shopify, and how many are not in
    * step.
@@ -59,27 +47,6 @@ export interface DashboardData {
    */
   lastOrderSyncAt: string | null;
   ordersAwaitingPayment: number;
-  totalOrders: number;
-  /**
-   * Which warehouses the window's sales orders were filed against, largest
-   * first, and how many orders needed more than one of them.
-   *
-   * The second number is the thing this connector exists for and the thing no
-   * other screen answers: an order split across two warehouses is two MetaKocka
-   * documents that have to add up to one Shopify order.
-   */
-  warehouseShares: WarehouseShare[];
-  splitOrders: number;
-  /**
-   * True while this shop writes one sales order per Shopify order.
-   *
-   * The two figures above are a breakdown by warehouse, and such a shop has no
-   * warehouse on any document. The caller shows something else rather than a
-   * bar chart of one unnamed bar.
-   */
-  unsplit: boolean;
-  /** How many days `series` and `warehouseShares` cover. */
-  windowDays: number;
 }
 
 function startOfUtcDay(date: Date): Date {
@@ -95,31 +62,24 @@ function startOfUtcDay(date: Date): Date {
 export async function getDashboard(
   principal: Principal,
   now: Date,
-  days = 14,
 ): Promise<DashboardData> {
   const domain = shopDomainOf(principal);
   const today = startOfUtcDay(now);
-  const windowStart = new Date(today);
-  windowStart.setUTCDate(windowStart.getUTCDate() - (days - 1));
 
   const [
     receivedToday,
     allocatedToday,
     needsAttention,
     writtenToday,
-    totalOrders,
-    recentOrders,
+    waiting,
     exceptionGroups,
     lastDocument,
     lastStockEvent,
+    lastCatalogueEvent,
     lastOrderSync,
     ordersAwaitingPayment,
     paymentsToday,
     stockEventsToday,
-    documentsBySource,
-    documentsByOrder,
-    sources,
-    salesOrderSetting,
   ] = await Promise.all([
     prisma.order.count({
       where: {
@@ -155,17 +115,12 @@ export async function getDashboard(
         status: "written",
       },
     }),
-    prisma.order.count({ where: { shop: { domain }, shopifyDeletedAt: null } }),
-
-    // One read for the whole chart window, bucketed in memory. A group-by per
-    // day would be several round trips for a page that must paint quickly.
-    prisma.order.findMany({
+    prisma.order.count({
       where: {
         shop: { domain },
         shopifyDeletedAt: null,
-        receivedAt: { gte: windowStart },
+        status: { in: ["received", "allocated"] },
       },
-      select: { receivedAt: true, status: true },
     }),
 
     prisma.exception.groupBy({
@@ -193,6 +148,12 @@ export async function getDashboard(
       },
       orderBy: { at: "desc" },
       select: { at: true, event: true },
+    }),
+
+    prisma.eventLog.findFirst({
+      where: { shop: { domain }, event: "catalogue.synced" },
+      orderBy: { at: "desc" },
+      select: { at: true },
     }),
 
     prisma.shop.findUnique({
@@ -229,74 +190,7 @@ export async function getDashboard(
       },
       select: { detail: true },
     }),
-
-    /*
-     * Where the window's documents were filed, and how many orders needed more
-     * than one warehouse. Two group-bys over an indexed range, not a query per
-     * order.
-     */
-    prisma.metakockaDocument.groupBy({
-      by: ["supplySourceId"],
-      where: {
-        shop: { domain },
-        status: "written",
-        retiredAt: null,
-        createdAt: { gte: windowStart },
-      },
-      _count: { _all: true },
-    }),
-
-    prisma.metakockaDocument.groupBy({
-      by: ["orderId"],
-      where: {
-        shop: { domain },
-        status: "written",
-        retiredAt: null,
-        createdAt: { gte: windowStart },
-      },
-      _count: { _all: true },
-    }),
-
-    prisma.supplySource.findMany({
-      where: { shop: { domain } },
-      select: { id: true, name: true },
-    }),
-
-    /*
-     * Whether this shop splits an order across warehouses at all.
-     *
-     * The distribution below is a breakdown by warehouse, and a shop writing
-     * one sales order per Shopify order has no warehouse on any of them — so
-     * the honest thing is to say the breakdown does not apply rather than to
-     * draw one bar and label it with a guess.
-     */
-    prisma.salesOrderSetting.findFirst({
-      where: { shop: { domain } },
-      select: { salesOrderSplit: true },
-    }),
   ]);
-
-  const buckets = new Map<string, DaySeriesPoint>();
-  for (let index = 0; index < days; index += 1) {
-    const day = new Date(windowStart);
-    day.setUTCDate(day.getUTCDate() + index);
-    const key = day.toISOString().slice(0, 10);
-    buckets.set(key, {
-      date: key,
-      received: 0,
-      written: 0,
-      needsAttention: 0,
-    });
-  }
-
-  for (const order of recentOrders) {
-    const key = order.receivedAt.toISOString().slice(0, 10);
-    const bucket = buckets.get(key);
-    if (!bucket) continue;
-    bucket.received += 1;
-    if (order.status === "written") bucket.written += 1;
-    if (order.status === "needs_attention") bucket.needsAttention += 1;
-  }
 
   const stockUpdatesToday = stockEventsToday.reduce((sum, event) => {
     const detail = (event.detail ?? {}) as Record<string, unknown>;
@@ -307,22 +201,6 @@ export async function getDashboard(
     return sum + part;
   }, 0);
 
-  const sourceNames = new Map(
-    sources.map((source) => [source.id, source.name]),
-  );
-  const warehouseShares = documentsBySource
-    .map((group) => ({
-      name: group.supplySourceId
-        ? (sourceNames.get(group.supplySourceId) ?? "Unknown warehouse")
-        : "Unknown warehouse",
-      count: group._count._all,
-    }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-
-  const splitOrders = documentsByOrder.filter(
-    (group) => group._count._all > 1,
-  ).length;
-
   return {
     counts: {
       receivedToday,
@@ -331,8 +209,8 @@ export async function getDashboard(
       writtenToday,
       paymentsToday,
       stockUpdatesToday,
+      waiting,
     },
-    series: [...buckets.values()],
     openExceptionsByKind: exceptionGroups.map((group) => ({
       kind: group.kind,
       count: group._count._all,
@@ -342,14 +220,9 @@ export async function getDashboard(
     lastStockSyncOk: lastStockEvent
       ? lastStockEvent.event !== "inventory.sync_skipped"
       : null,
+    lastCatalogueMatchAt: lastCatalogueEvent?.at.toISOString() ?? null,
     lastOrderSyncAt:
       lastOrderSync?.ordersReconciledThrough?.toISOString() ?? null,
     ordersAwaitingPayment,
-    totalOrders,
-    warehouseShares,
-    splitOrders,
-    /** True while this shop writes one sales order for a whole Shopify order. */
-    unsplit: salesOrderSetting?.salesOrderSplit === "single",
-    windowDays: days,
   };
 }

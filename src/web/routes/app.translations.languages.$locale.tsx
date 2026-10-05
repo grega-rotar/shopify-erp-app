@@ -141,6 +141,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         )
       : [];
 
+  // With AI translation on, the headline counts only what the language
+  // translates: content taken out of scope (metafields, say) is not missing
+  // or outdated work, it is left alone (docs/translations.md § Coverage).
+  const scoped = settings.aiEnabled;
   const byGroup = ALL_CONTENT_GROUPS.map((group) => {
     const totals = totalsFor(coverage.rows, locale, [
       ...CONTENT_GROUPS[group].types,
@@ -148,11 +152,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     return {
       group,
       label: CONTENT_GROUPS[group].label,
+      inScope: !scoped || settings.contentScope.includes(group),
       ...totals,
       coverage: coveragePercent([totals]),
     };
   }).filter((row) => row.fields > 0);
-  const totals = totalsFor(coverage.rows, locale);
+  const totals = totalsFor(
+    coverage.rows,
+    locale,
+    scoped ? typesForGroups(settings.contentScope) : null,
+  );
 
   return {
     kind: "read" as const,
@@ -183,6 +192,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     coverageCount: count,
     coverage: {
       readAt: coverage.readAt?.toISOString() ?? null,
+      scoped: scoped && settings.contentScope.length < ALL_CONTENT_GROUPS.length,
       percent: coveragePercent([totals]),
       ...totals,
       byGroup,
@@ -1202,7 +1212,7 @@ function LanguageSummary({
                 <s-stack direction="block" gap="small-500">
                   <s-heading>{`${formatPercent(coverage.percent)} translated`}</s-heading>
                   <s-text color="subdued">
-                    {`${coverage.fields.toLocaleString("en")} fields in the store`}
+                    {`${coverage.fields.toLocaleString("en")} fields ${coverage.scoped ? "in what gets translated" : "in the store"}`}
                   </s-text>
                 </s-stack>
                 <CoverageBar
@@ -1237,7 +1247,9 @@ function LanguageSummary({
                             {row.label}
                           </s-link>
                           <s-text color="subdued">
-                            {row.missing + row.outdated === 0
+                            {!row.inScope
+                              ? `Not translated · ${formatPercent(row.coverage)}`
+                              : row.missing + row.outdated === 0
                               ? formatPercent(row.coverage)
                               : `${(row.missing + row.outdated).toLocaleString("en")} to do · ${formatPercent(row.coverage)}`}
                           </s-text>

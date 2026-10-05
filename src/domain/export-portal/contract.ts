@@ -44,6 +44,17 @@ export const fieldOptionSchema = z.object({
   label: z.string(),
 });
 
+/**
+ * A `{key}` placeholder a text field's value may use, and what it comes to
+ * for this source (`example`), so the pattern editor can offer it as a chip.
+ */
+export const fieldTokenSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  example: z.string().nullable().optional(),
+});
+export type FieldToken = z.infer<typeof fieldTokenSchema>;
+
 export const fieldSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
@@ -53,6 +64,15 @@ export const fieldSchema = z.object({
   required: z.boolean().optional(),
   /** Only for `select`. */
   options: z.array(fieldOptionSchema).optional(),
+  /** Only for `text`: the placeholders the value may use. */
+  tokens: z.array(fieldTokenSchema).optional(),
+  /**
+   * With `tokens`: the real record the examples come from — what it is
+   * called, and the text the value is put in front of — for a preview.
+   */
+  sample: z
+    .object({ label: z.string().min(1), after: z.string() })
+    .optional(),
   /** A heading the field is grouped under, so a long form reads in parts. */
   group: z.string().nullable().optional(),
 });

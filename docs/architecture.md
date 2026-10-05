@@ -44,7 +44,7 @@ randomness; callers inject time and inputs.
 
 ## Merchant-facing shape
 
-Eight visible entries in `s-app-nav`, each a job rather than a table. The
+Nine visible entries in `s-app-nav`, each a job rather than a table. The
 admin draws the list with no groups, so the order is the grouping: the inbox,
 the daily work, the catalogue's content, the systems that feed the store, then
 settings. The admin highlights the entry the current path starts with, so every
@@ -61,6 +61,8 @@ Orders            /app/orders           list, /app/orders/:id, /app/orders/setti
                                         the pages stay reachable from MetaKocka and Settings
 Sales             /app/sales            sale campaigns; /app/sales/:id is the editor,
                                         /app/sales/:id/variants every variant it touches
+Products          /app/products         the catalogue snapshot as a list; /app/products/:id is
+                                        the product workspace (§ Product workspace below)
 Metafields        /app/product-setup    lands on /app/product-setup/types/:typeId?, the tree of
                                         product types beside the selected one; the workspace's
                                         own navigation reaches /attributes (the catalogue,
@@ -70,8 +72,8 @@ Translations      /app/translations     the store's languages (docs/translations
                                         /translate, /syncs (/:syncId), /glossary and /usage
 MetaKocka         /app/metakocka        the integration's front door: how each side is
                                         doing, opening onto Orders and
-  Products        /app/metakocka/products    status, /sync for settings, and /:id —
-                                             one product as a sale sees it
+  Products        /app/metakocka/products    matching status and /sync for settings; /:id
+                                             redirects to the product workspace
   Locations       /app/metakocka/locations   how stock is going, and /settings for the
                                              mappings, the defaults and the profit centres
 Sources           /app/sources          what the export portal pushes into the store, a view onto
@@ -100,8 +102,9 @@ Guided setup is `/app/setup`, five steps, reachable again from Home and
 Settings. Moved routes redirect: `/app/settings/sales-orders` to
 `/app/orders/settings`, `/app/settings/payments` to
 `/app/orders/settings/payments`, `/app/settings/supply-sources` to
-`/app/metakocka/locations`, and `/app/products/*` and `/app/locations/*` to the
-same pages under `/app/metakocka/`. `tests/unit/route-table.test.ts` asserts the
+`/app/metakocka/locations`, `/app/products/sync` and `/app/locations/*` to the
+same pages under `/app/metakocka/`, and `/app/metakocka/products/:id` to the
+product workspace's Variants tab. `tests/unit/route-table.test.ts` asserts the
 table, including that `/app/orders/settings` out-ranks `/app/orders/:orderId`.
 
 **An area is a page you land on plus a settings page behind its header
@@ -167,6 +170,30 @@ review step and the order settings page all read that one answer.
 
 The gateways a shop has used come from `order.payment_gateway` rather than from
 Shopify, for the same reason.
+
+### Home
+
+Home (`web/routes/app._index.tsx`) is four sections, each left out when it
+has nothing to say, all read from our own tables — no Shopify or MetaKocka
+call on the render path:
+
+1. **Finish setup**, only while `setup_completed_at` is null
+   (`SetupBanner`, from readiness). After activation, a readiness component
+   that needs attention becomes a row in Needs attention instead.
+2. **Needs attention**: open exceptions folded into one row per area
+   (`AttentionArea` in `web/lib/exceptions`, keyed by the `ExceptionKind`
+   enum so a new kind needs an area to compile). Each row links to
+   `/app/exceptions?area=<area>`, which filters the queue to that area's
+   kinds; individual records live only there.
+3. **Store operations**: six summaries — MetaKocka, orders, inventory,
+   products, translations, sales — built by `storeOperations`
+   (`web/lib/home`) from readiness, `getDashboard`, the stored translation
+   coverage and language sync times, and the campaigns. Problems are not
+   counted here; Needs attention states them once.
+4. **Recent activity**: `homeActivity` (`web/lib/activity`) — the newest
+   event of each kind, per-record events (`order.*`, `sale_variant.*`, …)
+   excluded in the query, every event described in words. An event with no
+   sentence is described by its area, never by its name.
 
 ### The activation boundary
 
@@ -534,6 +561,70 @@ update and read live before it is written, so a retry never discounts twice;
 and a restore writes only over what the campaign itself wrote, sending anything
 else to a `review` row and a `sale_price_conflict` exception.
 
+### Product workspace
+
+`/app/products/:id` is where a merchant looks at and edits one product,
+instead of Shopify's product editor, which stays one button away (Open in
+Shopify) for what the workspace does not cover. Tabs in the address
+(`?tab=`): Overview, Product details, Attributes, Variants, Inventory,
+Translations, Activity; switching tabs does not re-read the loader.
+
+```text
+loader → web/lib/product-workspace.server (one pass, independent reads side by side)
+  Shopify, live: adapters/shopify/product-workspace — the product (≤100 variants,
+    media, metafields, SEO, category, collections), stock per variant in 20-variant
+    pieces, variant metafields by key only when the plan has variant attributes
+  our tables: SKU registry, sale rows, plan and the chosen product type, trail, translation ownership and
+    settings, locations → domain/products/workspace (type match, completeness,
+    stock writer, locale status, issues) → web/lib/product-workspace (words)
+  export portal: getSource only when a `portal-source:` tag names one
+action → web/lib/product-actions.server: save | choose-type | translate | save-translation
+```
+
+What it edits and what it only shows follows who owns each field:
+
+- **Edited, saved together behind the save bar** (one Shopify save):
+  title, description (the shared rich text editor; an embed or table forces
+  the HTML view), vendor, product type, status, tags, page title and meta
+  description, per variant price, compare-at, SKU and barcode, and the
+  product setup values as metafields (docs/attributes.md § On the product
+  page; `metafieldsSet`/`metafieldsDelete`). Only
+  changed fields are sent (`productUpdate`, `tagsAdd`/`tagsRemove`,
+  `productVariantsBulkUpdate`). Before writing, the product is read again
+  and a field someone changed in Shopify since the page read it refuses the
+  save. Taking an active product off sale, or changing a matched variant's
+  SKU, is confirmed first. Audit: `product.edited`,
+  `product.variants_edited` (field names, never values),
+  `product.details_edited` (a count of values).
+- **A price a live campaign holds** (`applying`, `applied`, `review`,
+  `restoring`, `restore_failed`) is shown with its campaign and the price
+  that goes back, never offered, and the action checks the hold in the
+  database again before any write. The workspace is the second place this
+  app writes a price; it only writes prices no campaign holds, so a
+  campaign's snapshot and restore are untouched.
+- **The export portal's tags** (`awaiting-review`, `portal-source:<id>`)
+  are never removed from here. A product with a source tag carries a line
+  that the source updates its content, and a warning while edits are
+  unsaved (the overwrite-risk pattern).
+- **Translations** save from their own dialog through
+  `adapters/translations/edits.server` — the path the translation editor
+  uses — so a person's edit is recorded as `manual` and only changed fields
+  are sent; Translate uses the engine (`translateResourceNow`) in
+  `missing`/`missing_outdated` mode only.
+- **Read only**: stock (each location's writer is named — MetaKocka,
+  Shopify copied to MetaKocka, a fulfilment service, or nobody), product
+  setup attributes (the plan does not write metafields yet; the product's
+  type is the leaf whose Shopify category is the product's category, else
+  whose name or path is its product type), media, category and collections,
+  MetaKocka matching (by SKU, from the registry). Nothing on this page
+  writes to MetaKocka.
+
+Every read but the product itself fails soft into a section that says it
+could not be read. The page re-reads every minute while nothing is unsaved.
+Activity is the product's own `event_log` entries (`product`, `translation`
+by product id, `sale_variant` by variant id) and translation sync items for
+it, as sentences; an entry with no sentence is left out.
+
 ### Attribute schema
 
 What every product type should carry, planned as one document per shop and
@@ -696,6 +787,7 @@ enforcement gap is tracked in `docs/project-status.md`.
 | Payment rule                   | `src/domain/payments/` and `src/jobs/orders/payment-reconciler.ts`           |
 | Tax rule, treatment or mapping | `src/domain/tax/`, then `src/jobs/orders/tax-decider.ts`; screens under `app.settings.taxes.*` |
 | Sale pricing, rule or conflict rule | `src/domain/sales/`; the write path is `src/adapters/sales/writer.server.ts`; screens under `app.sales.*` |
+| Product workspace rule or screen | `src/domain/products/workspace.ts`; reads in `web/lib/product-workspace.server.ts`, writes in `web/lib/product-actions.server.ts` and `adapters/shopify/product-workspace.ts`; screens `app.products.*` and `components/product-*` |
 | Attribute schema rule or screen | `src/domain/attributes/`, then `web/lib/attributes.server.ts`; screens under `app.product-setup.*` |
 | Translation rule, prompt or price | `src/domain/translations/`; the engine is `src/adapters/translations/engine.server.ts`, the provider `src/adapters/ai/openai.server.ts`; screens under `app.translations.*` |
 | Export portal contract or a Sources screen | `src/domain/export-portal/contract.ts` (and `docs/sources.md` § The contract, which the portal implements); the client `src/adapters/export-portal/client.server.ts`; screens under `app.sources.*` |

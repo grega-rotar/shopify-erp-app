@@ -44,11 +44,26 @@ export async function appendEvent(
   });
 }
 
-export async function recentEvents(principal: Principal, limit = 20) {
+export async function recentEvents(
+  principal: Principal,
+  limit = 20,
+  /** Event names starting with any of these are left out, e.g. `"order."`. */
+  options: { excludePrefixes?: readonly string[] } = {},
+) {
   const domain = shopDomainOf(principal);
+  const excluded = options.excludePrefixes ?? [];
 
   return prisma.eventLog.findMany({
-    where: { shop: { domain } },
+    where: {
+      shop: { domain },
+      ...(excluded.length > 0
+        ? {
+            NOT: excluded.map((prefix) => ({
+              event: { startsWith: prefix },
+            })),
+          }
+        : {}),
+    },
     orderBy: { at: "desc" },
     take: limit,
   });

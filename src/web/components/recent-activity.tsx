@@ -28,13 +28,16 @@ export interface ActivityItem {
 export function RecentActivity({
   items,
   empty,
+  initial = 1,
 }: {
   items: ActivityItem[];
   /** Shown instead of the list before anything has happened. */
   empty: string;
+  /** How many show before "Show more". Home, where activity is a section, shows its few. */
+  initial?: number;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const visible = showAll ? items : items.slice(0, 1);
+  const visible = showAll ? items : items.slice(0, initial);
 
   return (
     <s-stack direction="block" gap="small-100">
@@ -68,7 +71,7 @@ export function RecentActivity({
        * space however clickable it is — the chevron alone did not fix that.
        * The divider gives it something to sit against.
        */}
-      {items.length > 1 ? (
+      {items.length > initial ? (
         <s-stack direction="block" gap="small-300">
           <s-divider />
           <s-stack direction="inline">
@@ -78,7 +81,7 @@ export function RecentActivity({
               icon={showAll ? "chevron-up" : "chevron-down"}
               onClick={() => setShowAll((on) => !on)}
             >
-              {showAll ? "Show less" : `Show ${items.length - 1} more`}
+              {showAll ? "Show less" : `Show ${items.length - initial} more`}
             </s-button>
           </s-stack>
         </s-stack>

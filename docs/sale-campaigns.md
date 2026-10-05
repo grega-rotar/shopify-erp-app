@@ -413,8 +413,14 @@ shows its own trail.
   page (`DownloadButton`) and saved as a blob: a link opened in a new tab
   reaches the app without a session token and lands in the install flow
   instead of the file.
-- `/app/metakocka/products/:productId` — the product view: per variant, price,
-  compare-at, sale, campaign (linked), discount, original price.
+- `/app/products/:productId` — the product workspace (docs/architecture.md
+  § Product workspace), which replaced the product view: per variant, price,
+  compare-at, the campaign (linked) and the price that goes back. A merchant
+  can edit a variant's price there, but never one a live campaign holds:
+  the field states the campaign instead, and the save checks the hold in
+  the database again, so the workspace never becomes an external change a
+  campaign has to review. `/app/metakocka/products/:productId` redirects
+  there.
 - Needs attention gains `sale_price_conflict`, `sale_apply_failed`,
   `sale_restore_failed`, each with an action into the campaign.
 

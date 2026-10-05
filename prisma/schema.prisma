@@ -143,6 +143,7 @@ model Shop {
   catalogVariants         CatalogVariant[]
   catalogPriceLists       CatalogPriceList[]
   attributeSchema         AttributeSchema?
+  productTypeAssignments  ProductTypeAssignment[]
   translationLanguages    TranslationLanguage[]
   translationCoverages    TranslationCoverage[]
   translationGlossary     TranslationGlossaryTerm[]
@@ -2289,6 +2290,31 @@ model AttributeSchema {
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@map("attribute_schema")
+}
+
+/// The product type of the plan a person chose for one product
+/// (docs/attributes.md § On the product page). It outranks the match by
+/// category or Shopify product type. `typeId` names a type in the shop's
+/// `AttributeSchema` document; a type deleted from the plan leaves the row
+/// pointing at nothing, which the page reads as "no choice" rather than
+/// failing.
+model ProductTypeAssignment {
+  id        String  @id @default(cuid())
+  shopId    String  @map("shop_id")
+  /// Shopify product GID.
+  productId String  @map("product_id")
+  typeId    String  @map("type_id")
+  /// The staff member who chose it, as the event log records an actor.
+  chosenBy  String? @map("chosen_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, productId])
+  @@index([shopId, typeId])
+  @@map("product_type_assignment")
 }
 
 // ---------------------------------------------------------------------------

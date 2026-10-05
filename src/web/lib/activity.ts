@@ -1,3 +1,5 @@
+import { describeLanguage } from "~/domain/translations/languages";
+
 /**
  * One place that turns an `event_log` row into words.
  *
@@ -20,8 +22,13 @@ function count(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** "4,734", as the rest of Home writes a count. */
+function fmt(n: number): string {
+  return n.toLocaleString("en");
+}
+
 export function products(n: number): string {
-  return n === 1 ? "1 product" : `${n} products`;
+  return n === 1 ? "1 product" : `${n.toLocaleString("en")} products`;
 }
 
 /** Why a warehouse was skipped, and what to do about it. */
@@ -132,8 +139,8 @@ export function describeEvent(
         title: "Catalogue",
         text:
           unmatched > 0
-            ? `Read ${count(d.variants)} Shopify variants. ${matched} found their MetaKocka product, ${unmatched} did not.`
-            : `Read ${count(d.variants)} Shopify variants. All ${matched} found their MetaKocka product.`,
+            ? `Read ${fmt(count(d.variants))} Shopify variants. ${fmt(matched)} found their MetaKocka product, ${fmt(unmatched)} did not.`
+            : `Read ${fmt(count(d.variants))} Shopify variants. All ${fmt(matched)} found their MetaKocka product.`,
         ok: unmatched === 0,
       };
     }
@@ -367,9 +374,370 @@ export function describeEvent(
         ok: true,
       };
 
+    case "setup.completed":
+      return {
+        title: "Setup",
+        text: "Setup was finished and synchronization started.",
+        ok: true,
+      };
+
+    case "sales_order.settings_saved":
+      return {
+        title: "Orders",
+        text:
+          d.transferOrders === false
+            ? "Saved the order settings. Orders are not sent to MetaKocka."
+            : "Saved the order settings.",
+        ok: true,
+      };
+
+    case "sales_order.backlog_queued": {
+      const orders = count(d.orders);
+      return {
+        title: "Orders",
+        text: `Queued ${orders === 1 ? "1 order" : `${orders} orders`} received while order transfer was off.`,
+        ok: true,
+      };
+    }
+
+    case "orders.reconciled": {
+      const ingested = count(d.ingested);
+      const updated = count(d.updated);
+      const parts: string[] = [];
+      if (ingested > 0)
+        parts.push(
+          `${ingested} missed ${ingested === 1 ? "order" : "orders"} picked up`,
+        );
+      if (updated > 0) parts.push(`${updated} updated`);
+      return {
+        title: "Orders",
+        text: `Checked Shopify for changes to orders: ${parts.join(", ") || "nothing had changed"}.`,
+        ok: true,
+      };
+    }
+
+    case "translation_sync.completed":
+      return {
+        title: "Translations",
+        text: "Translation sync completed.",
+        ok: true,
+      };
+
+    case "translation_sync.nothing_to_do":
+      return {
+        title: "Translations",
+        text: "Translation sync checked the store. Everything was already up to date.",
+        ok: true,
+      };
+
+    case "translation_sync.failed": {
+      const reason = typeof d.reason === "string" ? d.reason.trim() : "";
+      return {
+        title: "Translations",
+        text: `A translation sync could not run.${reason ? ` It said: “${reason}”.` : ""}`,
+        ok: false,
+      };
+    }
+
+    case "translation_sync.started": {
+      const locales = Array.isArray(d.targetLocales)
+        ? d.targetLocales.length
+        : 0;
+      return {
+        title: "Translations",
+        text:
+          locales > 0
+            ? `A translation sync started for ${locales === 1 ? "1 language" : `${locales} languages`}.`
+            : "A translation sync started.",
+        ok: true,
+      };
+    }
+
+    case "translation_sync.cancel_requested":
+    case "translation_sync.cancelled":
+      return {
+        title: "Translations",
+        text: "A translation sync was cancelled.",
+        ok: true,
+      };
+
+    case "translation_language.added":
+      return {
+        title: "Translations",
+        text: `Added ${languageOf(entityId)}.`,
+        ok: true,
+      };
+
+    case "translation_language.removed":
+      return {
+        title: "Translations",
+        text: `Removed ${languageOf(entityId)}.`,
+        ok: true,
+      };
+
+    case "translation_language.settings_changed":
+    case "translation_language.markets_changed":
+      return {
+        title: "Translations",
+        text: `Changed the settings for ${languageOf(entityId)}.`,
+        ok: true,
+      };
+
+    case "translation_language.remove_translations_requested":
+      return {
+        title: "Translations",
+        text: `Deleting the translations for ${languageOf(entityId)}.`,
+        ok: true,
+      };
+
+    case "translation_profile.built":
+      return {
+        title: "Translations",
+        text: "Learnt about the store, for the AI to translate with.",
+        ok: true,
+      };
+
+    case "translation_profile.settings_changed":
+    case "translation_profile.rebuild_requested":
+      return {
+        title: "Translations",
+        text: "Changed what the AI knows about the store.",
+        ok: true,
+      };
+
+    case "export_source.created":
+      return {
+        title: "Sources",
+        text: `Created ${nameOr(d.name, "a source")} in the export portal.`,
+        ok: true,
+      };
+
+    case "export_source.enabled":
+      return {
+        title: "Sources",
+        text: `Switched ${nameOr(d.name, "a source")} on.`,
+        ok: true,
+      };
+
+    case "export_source.disabled":
+      return {
+        title: "Sources",
+        text: `Switched ${nameOr(d.name, "a source")} off.`,
+        ok: true,
+      };
+
+    case "export_source.settings_saved":
+      return { title: "Sources", text: "Saved a source's settings.", ok: true };
+
+    case "export_source.run_requested":
+      return { title: "Sources", text: "Asked a source to run now.", ok: true };
+
+    case "export_source.deleted":
+      return { title: "Sources", text: "Deleted a source.", ok: true };
+
+    case "export_portal.key_saved":
+    case "export_portal.connection_verified":
+      return {
+        title: "Sources",
+        text: "Connected to the export portal.",
+        ok: true,
+      };
+
+    case "export_portal.disconnected":
+      return {
+        title: "Sources",
+        text: "Disconnected from the export portal.",
+        ok: true,
+      };
+
+    case "product.review_approved":
+      return {
+        title: "Sources",
+        text: `Approved ${nameOr(d.title, "a product")} for the store.`,
+        ok: true,
+      };
+
     default:
-      // A new event nobody has written a sentence for yet. Showing the raw name
-      // is better than hiding that something happened.
-      return { title: "Activity", text: event.event, ok: true };
+      if (event.event.startsWith("sale_campaign.")) {
+        return describeCampaign(
+          event.event,
+          d,
+          (entityId && names?.get(entityId)) || null,
+        );
+      }
+      /*
+       * A new event nobody has written a sentence for yet. The raw name is
+       * syntax (docs/ui-conventions.md § Element semantics), so the area it
+       * belongs to stands in: less said, but nothing a merchant cannot read.
+       */
+      return {
+        title: areaOfEvent(event.event),
+        text: "An update was recorded.",
+        ok: true,
+      };
   }
+}
+
+function nameOr(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : fallback;
+}
+
+/** "German (de)", the glossary's form of a language. */
+function languageOf(locale: string | null | undefined): string {
+  if (!locale) return "a language";
+  return `${describeLanguage(locale).name} (${locale})`;
+}
+
+/** What a campaign did, under the campaign's own name. */
+function describeCampaign(
+  event: string,
+  d: Record<string, unknown>,
+  name: string | null,
+): DescribedEvent {
+  const title = name ?? "Sale campaign";
+  const counts = (d.counts ?? {}) as Record<string, unknown>;
+  const variants = (n: number) =>
+    n === 1 ? "1 variant" : `${fmt(n)} variants`;
+
+  switch (event) {
+    case "sale_campaign.apply_finished": {
+      const applied = count(counts.applied);
+      const failed = count(counts.failed);
+      return {
+        title,
+        text:
+          `Sale prices applied to ${variants(applied)}.` +
+          (failed > 0 ? ` ${variants(failed)} could not be changed.` : ""),
+        ok: failed === 0,
+      };
+    }
+    case "sale_campaign.restore_finished": {
+      const restored = count(counts.restored);
+      const failed = count(counts.restore_failed);
+      return {
+        title,
+        text:
+          `Original prices put back on ${variants(restored)}.` +
+          (failed > 0 ? ` ${variants(failed)} could not be put back.` : ""),
+        ok: failed === 0,
+      };
+    }
+    case "sale_campaign.membership_changed":
+      return {
+        title,
+        text: `${variants(count(d.added))} joined, ${count(d.released)} left.`,
+        ok: true,
+      };
+    case "sale_campaign.conflict_detected":
+      return { title, text: "Overlaps another campaign.", ok: false };
+    default:
+      return {
+        title,
+        text: CAMPAIGN_COPY[event] ?? "The campaign was updated.",
+        ok: true,
+      };
+  }
+}
+
+const CAMPAIGN_COPY: Record<string, string> = {
+  "sale_campaign.created": "Campaign created.",
+  "sale_campaign.edited": "Campaign edited.",
+  "sale_campaign.scheduled": "Scheduled to start.",
+  "sale_campaign.unscheduled": "Moved back to draft.",
+  "sale_campaign.activated": "Campaign started.",
+  "sale_campaign.paused": "Campaign paused.",
+  "sale_campaign.resumed": "Campaign resumed.",
+  "sale_campaign.ending": "Ending: original prices are being put back.",
+  "sale_campaign.completed": "Campaign ended.",
+  "sale_campaign.cancelled": "Campaign cancelled.",
+  "sale_campaign.deleted": "Campaign deleted.",
+  "sale_campaign.restore_requested": "Putting original prices back.",
+  "sale_campaign.retry_requested": "Retrying the variants that failed.",
+};
+
+/** The area an event belongs to, from its name, for events with no sentence. */
+function areaOfEvent(event: string): string {
+  const prefix = event.split(".")[0] ?? "";
+  if (prefix.startsWith("translation")) return "Translations";
+  if (prefix.startsWith("sale_")) return "Sales";
+  if (prefix.startsWith("export_") || prefix === "product") return "Sources";
+  if (prefix === "order" || prefix === "orders" || prefix === "sales_order")
+    return "Orders";
+  if (
+    prefix === "inventory" ||
+    prefix.startsWith("warehouse") ||
+    prefix.startsWith("supply")
+  )
+    return "Inventory";
+  if (
+    prefix.startsWith("product") ||
+    prefix === "catalogue" ||
+    prefix === "pricelists"
+  )
+    return "Products";
+  if (prefix === "payment_types") return "Payments";
+  if (prefix === "tax") return "Taxes & VAT";
+  if (prefix === "metakocka" || prefix.startsWith("profit_center"))
+    return "MetaKocka";
+  if (prefix === "exception") return "Needs attention";
+  return "This app";
+}
+
+/**
+ * Events Home leaves out: one row per order, per variant or per resource, or
+ * a step inside a run whose outcome has its own event. They are true and
+ * each page that owns them shows them; on Home a busy hour of them pushes
+ * every other kind of activity off the list.
+ */
+export const HOME_ACTIVITY_EXCLUDED: readonly string[] = [
+  "order.",
+  "sale_variant.",
+  "exception.",
+  "translation.",
+  "translation_sync.started",
+  "translation_sync.cancel_requested",
+  "inventory.stock_event_received",
+  "catalogue.snapshot",
+  "pricelists.",
+  "payment_types.loaded",
+  "payment_types.discovered",
+  "compliance.",
+];
+
+export interface ActivityEvent {
+  id: string;
+  at: Date;
+  event: string;
+  entityId: string | null;
+  detail: unknown;
+}
+
+/**
+ * Home's recent activity: the newest few events, one per kind.
+ *
+ * A translation sync runs every few minutes and a stock sweep every five,
+ * so the newest ten rows are often ten of the same sentence. Keeping only
+ * the newest of each kind (the same event about the same thing) leaves
+ * room for everything else that happened.
+ */
+export function homeActivity(
+  events: readonly ActivityEvent[],
+  names?: Map<string, string>,
+  limit = 5,
+): Array<DescribedEvent & { id: string; at: string }> {
+  const seen = new Set<string>();
+  const items: Array<DescribedEvent & { id: string; at: string }> = [];
+  for (const event of events) {
+    if (HOME_ACTIVITY_EXCLUDED.some((prefix) => event.event.startsWith(prefix)))
+      continue;
+    const described = describeEvent(event, names, event.entityId);
+    const key = `${event.event}|${described.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ id: event.id, at: event.at.toISOString(), ...described });
+    if (items.length === limit) break;
+  }
+  return items;
 }

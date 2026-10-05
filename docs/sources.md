@@ -206,6 +206,15 @@ The portal owns the meaning of every field; this app only knows its type.
 - A **`number`** is sent as a number; blank on an optional field is `null`.
 - A **`select`** value must be one of `options`; this app checks that
   before sending and the portal checks it again.
+- A **`text`** field with `tokens` is a pattern in the name pattern's own
+  syntax (`{field|filter}`, `[optional groups]`), filled in per product by
+  the portal — today the title prefix (`{vendor}`, `{category}`, …). It is
+  edited like the MetaKocka name: the pattern editor across the card, chips
+  picked from a list with the portal's example beside each, and under it the
+  portal's `sample` product as it would come out ("UF-1: Dakine - Seeker
+  Vest"). An unknown field or filter is flagged before saving; the portal
+  refuses it too. Posted as the plain string it is
+  (`web/lib/portal-field-tokens.ts`).
 - `required` is enforced here, with the field's own label in the message,
   and again by the portal.
 - A `PATCH` carries only the values that changed against what the portal
@@ -330,7 +339,8 @@ review`), which the run pages already show as an attention item.
 
 **What this app does.** `/app/sources/review` lists Shopify's drafts
 carrying `awaiting-review`, newest first, filterable by source and by
-search (`reviewQuery`, `domain/export-portal/review.ts`). Each row says
+search (`reviewQuery`, `domain/export-portal/review.ts`). A row's title
+opens the product's workspace in this app (`/app/products/:id`). Each row says
 which of the store's published languages still lack a translation of the
 product (`translationGaps`, counted as coverage counts: a field the
 language keeps in the original is not missing), and offers:

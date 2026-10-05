@@ -81,7 +81,7 @@ vi.mock("~/adapters/db/repositories/translations.server", () => ({
   recordOwnership: (...args: unknown[]) => repo.recordOwnership(...args),
 }));
 
-const { translateResource, hashValue } = await import("~/adapters/translations/engine.server");
+const { automaticWorkFor, translateResource, hashValue } = await import("~/adapters/translations/engine.server");
 
 function reply(values: Record<string, string>): TranslateOutcome {
   const translations = Object.fromEntries(Object.values(values).map((value, index) => [String(index + 1), value]));
@@ -447,5 +447,73 @@ describe("the engine", () => {
     );
     expect(provider.translate.mock.calls[0]![0].fields.map((f) => f.key)).toEqual(["body_html"]);
     expect(outcome.items[0]?.detail).toMatchObject({ skipped: { kept_original: 1 } });
+  });
+});
+
+/**
+ * The product webhook asks this before collecting a product
+ * (docs/translations.md § Automatic translation): a stock, price or
+ * metafield change leaves the text as it was and opens no sync.
+ */
+describe("automaticWorkFor", () => {
+  const now = new Date("2026-09-28T12:00:00Z");
+  const ai = (key: string, value: string): OwnershipRecord => ({ key, locale: "sl", owner: "ai", valueHash: hashValue(value) });
+  const ask = (
+    res: TranslatableResource,
+    options: { mode?: "missing" | "missing_outdated"; ownership?: OwnershipRecord[]; failure?: StoredFailure } = {},
+  ) =>
+    automaticWorkFor({
+      resource: res,
+      resourceType: "PRODUCT",
+      locale: "sl",
+      primaryLocale: "en",
+      override: null,
+      ownership: options.ownership ?? [],
+      settings: defaultLanguageSettings("sl"),
+      mode: options.mode ?? "missing_outdated",
+      failure: options.failure,
+      now,
+    });
+
+  it("finds nothing to do when the product's text is translated and current", () => {
+    const res = resource("gid://shopify/Product/20", [{ key: "title", value: "Kite" }], {
+      sl: [{ key: "title", value: "Zmaj" }],
+    });
+    expect(ask(res, { ownership: [ai("title", "Zmaj")] })).toBe(false);
+  });
+
+  it("finds work for a missing field", () => {
+    const res = resource("gid://shopify/Product/21", [{ key: "title", value: "Kite" }]);
+    expect(ask(res, { mode: "missing" })).toBe(true);
+  });
+
+  it("refreshes an outdated field the AI wrote only when the language asks for outdated", () => {
+    const res = resource("gid://shopify/Product/22", [{ key: "title", value: "Kite 2" }], {
+      sl: [{ key: "title", value: "Zmaj", outdated: true }],
+    });
+    const ownership = [ai("title", "Zmaj")];
+    expect(ask(res, { mode: "missing", ownership })).toBe(false);
+    expect(ask(res, { mode: "missing_outdated", ownership })).toBe(true);
+  });
+
+  it("leaves an outdated translation a person wrote alone", () => {
+    const res = resource("gid://shopify/Product/23", [{ key: "title", value: "Kite 2" }], {
+      sl: [{ key: "title", value: "Zmaj", outdated: true }],
+    });
+    expect(ask(res)).toBe(false);
+  });
+
+  it("does not collect a failure it is still backing off from on the same source", () => {
+    const res = resource("gid://shopify/Product/24", [{ key: "title", value: "Kite" }]);
+    const failure: StoredFailure = {
+      locale: "sl",
+      sourceKey: hashValue("title:digest-title"),
+      attempts: 1,
+      lastError: "The reply left out title.",
+      failedAt: now,
+      retryAfter: new Date(now.getTime() + 86_400_000),
+    };
+    expect(ask(res, { failure })).toBe(false);
+    expect(ask(res, { failure: { ...failure, sourceKey: "another-source" } })).toBe(true);
   });
 });

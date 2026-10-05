@@ -3,7 +3,11 @@ import { z } from "zod";
 
 import { isConfigured } from "~/adapters/ai/openai.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
-import { raiseException } from "~/adapters/db/repositories/exception.server";
+import {
+  raiseException,
+  resolveExceptionByKey,
+} from "~/adapters/db/repositories/exception.server";
+import { listFailures } from "~/adapters/db/repositories/translation-failures.server";
 import {
   advanceSync,
   beginSyncPass,
@@ -35,9 +39,14 @@ import {
   loadGlossaries,
   translateResource,
   type EngineContext,
+  type ResourceOutcome,
 } from "~/adapters/translations/engine.server";
 import { loadIntelligence } from "~/adapters/translations/intelligence.server";
 import { requestCoverageRefresh } from "~/adapters/translations/syncs.server";
+import {
+  translationFailureKey,
+  translationFailureMessage,
+} from "~/domain/translations/failure-notice";
 import { isResourceType, type ResourceType } from "~/domain/translations/types";
 import { serviceToken } from "~/domain/types";
 
@@ -197,6 +206,7 @@ export async function handleTranslationSync(job: Job<unknown>): Promise<void> {
       glossaries,
     });
     await recordSyncItems(principal, syncId, outcome.items);
+    await noteFailures(principal, syncId, resource.resourceId, outcome);
     counts.resources += 1;
     counts.translated += outcome.translated;
     counts.copied += outcome.copied;
@@ -266,20 +276,47 @@ async function complete(
     entityId: sync.id,
     event: "translation_sync.completed",
   });
-  // Items with failures are a condition a person should see, once.
-  const fresh = await getSync(principal, sync.id);
-  if (fresh && fresh.failedFields > 0) {
-    await raiseException(principal, {
-      kind: "translation_failed",
-      dedupeKey: `translation-sync:${sync.id}`,
-      message: `${fresh.failedFields.toLocaleString("en")} fields could not be translated in a sync. Open the sync to see each resource and the reason.`,
-      detail: { syncId: sync.id, failedFields: fresh.failedFields },
-    });
-  }
+  // Failed items were raised per resource as the pages ran (noteFailures).
   // A collected sync is a handful of products from webhooks, all day long;
   // recounting the whole store after each kept a count running for ever.
   // The nightly count covers them.
   if (!collected) await requestCoverageRefresh(principal);
+}
+
+/**
+ * A resource that failed in any language is one Needs attention row, named
+ * and with the reason, updated while it keeps failing; once it translates
+ * and no failure is remembered for it, the row closes itself
+ * (docs/translations.md § Failures).
+ */
+async function noteFailures(
+  principal: ReturnType<typeof serviceToken>,
+  syncId: string,
+  resourceId: string,
+  outcome: ResourceOutcome,
+): Promise<void> {
+  const key = translationFailureKey(resourceId);
+  const failed = outcome.items.filter((item) => item.status === "failed");
+  const first = failed[0];
+  if (first) {
+    const title = first.title ?? resourceId;
+    await raiseException(principal, {
+      kind: "translation_failed",
+      dedupeKey: key,
+      message: translationFailureMessage(title, failed),
+      detail: {
+        syncId,
+        resourceId,
+        resourceType: first.resourceType,
+        title,
+        locales: failed.map((item) => item.locale),
+      },
+    });
+    return;
+  }
+  if (outcome.translated + outcome.copied === 0) return;
+  if ((await listFailures(principal, resourceId)).size > 0) return;
+  await resolveExceptionByKey(principal, "translation_failed", key, "app", new Date());
 }
 
 async function fail(

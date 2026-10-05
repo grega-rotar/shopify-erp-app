@@ -219,19 +219,89 @@ function sourceKeyOf(fields: readonly SourceField[]): string {
   );
 }
 
-async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Promise<LocaleResult> {
-  const settings =
-    ctx.settings.get(input.locale) ?? defaultLanguageSettings(input.locale);
+/** What one language would do with a resource, before anything is sent. */
+function planLocale(input: {
+  resource: TranslatableResource;
+  resourceType: ResourceType;
+  locale: string;
+  sourceLocale: string;
+  ownership: readonly OwnershipRecord[];
+  settings: LanguageSettings;
+  mode: SyncMode;
+}) {
   const decisions = planResource({
     fields: input.resource.fields,
     translations: input.resource.translations.get(input.locale) ?? [],
     ownership: input.ownership,
     hash: hashValue,
-    mode: ctx.mode,
-    policy: settings.overwritePolicy,
-    sourceLocale: input.source.locale,
+    mode: input.mode,
+    policy: input.settings.overwritePolicy,
+    sourceLocale: input.sourceLocale,
     targetLocale: input.locale,
-    keep: keptKeys(settings.keepOriginal, input.resourceType),
+    keep: keptKeys(input.settings.keepOriginal, input.resourceType),
+  });
+  return {
+    decisions,
+    toTranslate: decisions.filter(
+      (d): d is Extract<FieldDecision, { kind: "translate" }> => d.kind === "translate",
+    ),
+    toCopy: decisions.filter(
+      (d): d is Extract<FieldDecision, { kind: "copy_source" }> =>
+        d.kind === "copy_source",
+    ),
+  };
+}
+
+/**
+ * Whether automatic work on this resource would write anything in the
+ * language: a field to translate or copy that is not a failure it is still
+ * backing off from. A change to stock, price or a metafield leaves a
+ * product's own text as it was, and this says so without opening a sync
+ * (docs/translations.md § Automatic translation).
+ */
+export function automaticWorkFor(input: {
+  resource: TranslatableResource;
+  resourceType: ResourceType;
+  locale: string;
+  primaryLocale: string;
+  override: SourceOverride | null;
+  ownership: readonly OwnershipRecord[];
+  settings: LanguageSettings;
+  mode: SyncMode;
+  failure: StoredFailure | undefined;
+  now: Date;
+}): boolean {
+  if (input.locale === input.primaryLocale) return false;
+  const source = resolveSourceLocale({
+    primaryLocale: input.primaryLocale,
+    shopifyContentLocale: input.resource.sourceLocale,
+    override: input.override?.sourceLocale ?? null,
+    detected: input.override?.detectedLocale ?? null,
+  });
+  const { toTranslate, toCopy } = planLocale({
+    ...input,
+    sourceLocale: source.locale,
+  });
+  if (toCopy.length > 0) return true;
+  if (toTranslate.length === 0) return false;
+  return !isBackingOff(
+    input.failure,
+    sourceKeyOf(toTranslate.map((d) => d.field)),
+    input.now,
+  );
+}
+
+async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Promise<LocaleResult> {
+  const settings =
+    ctx.settings.get(input.locale) ?? defaultLanguageSettings(input.locale);
+  const { decisions, toTranslate, toCopy } = planLocale({
+    resource: input.resource,
+    resourceType: input.resourceType,
+    locale: input.locale,
+    sourceLocale: input.source.locale,
+    ownership: input.ownership,
+    settings,
+    mode: ctx.mode,
   });
   const summary = summarisePlan(decisions);
   const base = {
@@ -241,14 +311,6 @@ async function translateIntoLocale(ctx: EngineContext, input: LocaleInput): Prom
     title: input.title,
   };
   const skippedCount = Object.values(summary.skipped).reduce((a, b) => a + b, 0);
-
-  const toTranslate = decisions.filter(
-    (d): d is Extract<FieldDecision, { kind: "translate" }> => d.kind === "translate",
-  );
-  const toCopy = decisions.filter(
-    (d): d is Extract<FieldDecision, { kind: "copy_source" }> =>
-      d.kind === "copy_source",
-  );
 
   if (toTranslate.length === 0 && toCopy.length === 0) {
     return {

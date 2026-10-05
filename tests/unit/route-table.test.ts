@@ -186,6 +186,19 @@ describe("route table", () => {
     );
   });
 
+  it("opens the product workspace from the products list", async () => {
+    // "sync" is static and must still win over a product's numeric id.
+    expect(await fileFor("/app/products")).toBe(
+      "routes/app.products._index.tsx",
+    );
+    expect(await fileFor("/app/products/123456")).toBe(
+      "routes/app.products.$productId.tsx",
+    );
+    expect(await fileFor("/app/products/sync")).toBe(
+      "routes/app.products.sync.tsx",
+    );
+  });
+
   it("gives each area's settings a page under the area itself", async () => {
     // Locations became a layoutless pair the way Orders already was: the page
     // you land on, and the settings behind its header button. Without the
@@ -199,15 +212,9 @@ describe("route table", () => {
     );
   });
 
-  it("keeps the old Products and Locations addresses as redirects", async () => {
-    expect(await fileFor("/app/products")).toBe(
-      "routes/app.products._index.tsx",
-    );
+  it("keeps the old Products settings and Locations addresses as redirects", async () => {
     expect(await fileFor("/app/products/sync")).toBe(
       "routes/app.products.sync.tsx",
-    );
-    expect(await fileFor("/app/products/123456")).toBe(
-      "routes/app.products.$productId.tsx",
     );
     expect(await fileFor("/app/locations")).toBe(
       "routes/app.locations._index.tsx",

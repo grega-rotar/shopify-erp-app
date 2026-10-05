@@ -248,6 +248,24 @@ function SettingRows({
             />
           ),
         };
+      // A pattern is edited the way the MetaKocka name is: its label over
+      // an editor as wide as the card, the preview under it.
+      if (editing && field.tokens && field.tokens.length > 0)
+        return {
+          key: field.key,
+          label: field.label,
+          wide: true,
+          value: (
+            <PortalField
+              field={field}
+              stored={source.values[field.key] ?? null}
+              value={edit.state[field.key] ?? ""}
+              error={edit.errors[field.key]}
+              onChange={(value) => edit.setField(field.key, value)}
+              disabled={edit.busy}
+            />
+          ),
+        };
       if (editing)
         return {
           key: field.key,

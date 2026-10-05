@@ -21,7 +21,10 @@ import {
   coveragePercent,
   type CoverageRow,
 } from "~/domain/translations/estimate";
-import type { ShopLocale } from "~/domain/translations/types";
+import {
+  typesForGroups,
+  type ShopLocale,
+} from "~/domain/translations/types";
 import type { Principal } from "~/domain/types";
 
 /**
@@ -94,8 +97,11 @@ export async function loadLanguagesOverview(
   const syncingLocales = new Set(active.flatMap((sync) => sync.targetLocales));
 
   const rows = locales.locales.map((locale): LanguageRow => {
-    const totals = totalsFor(coverage.rows, locale.locale);
     const stored = byLocale.get(locale.locale) ?? null;
+    // Content out of an AI language's scope is left alone, not owed: it does
+    // not count as missing or outdated (docs/translations.md § Coverage).
+    const scope = stored?.aiEnabled ? typesForGroups(stored.contentScope) : null;
+    const totals = totalsFor(coverage.rows, locale.locale, scope);
     return {
       locale: locale.locale,
       name: locale.name,
@@ -111,9 +117,7 @@ export async function loadLanguagesOverview(
       settings: stored,
       coverage: locale.primary
         ? 100
-        : coveragePercent(
-            coverage.rows.filter((row) => row.locale === locale.locale),
-          ),
+        : coveragePercent([totals]),
       missing: totals.missing,
       outdated: totals.outdated,
       fields: totals.fields,

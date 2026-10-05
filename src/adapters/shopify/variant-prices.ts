@@ -9,7 +9,9 @@ import type { PricePair } from "~/domain/sales/types";
  * Reading and writing variant prices (docs/sale-campaigns.md § Shopify API
  * operations).
  *
- * The one place this app writes a price. Every write is preceded by a live
+ * How a campaign writes a price. The product workspace is the only other
+ * writer (`adapters/shopify/product-workspace.ts`), and it never writes a
+ * price a live campaign holds. Every write here is preceded by a live
  * read of the same variants, so a retry sees what the previous attempt did;
  * that is done by the caller (the run handler), which is why the two are
  * separate functions rather than a read-then-write.

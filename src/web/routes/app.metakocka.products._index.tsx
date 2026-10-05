@@ -28,6 +28,7 @@ import { RecentActivity } from "~/web/components/recent-activity";
 import { describeEvent } from "~/web/lib/activity";
 import { formatDateTime, formatInterval } from "~/web/lib/datetime";
 import { principalFromSession } from "~/web/lib/principal.server";
+import { productPath } from "~/web/lib/product-workspace";
 
 /**
  * Products: which Shopify SKUs have a MetaKocka product behind them.
@@ -374,7 +375,18 @@ export default function Products() {
                               />
                             ) : null}
                           </s-box>
-                          <s-text>{product.title ?? product.sku}</s-text>
+                          {product.shopifyProductId ? (
+                            <s-link
+                              href={productPath(
+                                product.shopifyProductId,
+                                "variants",
+                              )}
+                            >
+                              {product.title ?? product.sku}
+                            </s-link>
+                          ) : (
+                            <s-text>{product.title ?? product.sku}</s-text>
+                          )}
                         </s-stack>
                       </s-table-cell>
                       <s-table-cell>
