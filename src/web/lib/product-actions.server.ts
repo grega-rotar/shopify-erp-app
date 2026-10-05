@@ -9,6 +9,7 @@ import {
   clearAssignedType,
 } from "~/adapters/db/repositories/product-type-assignment.server";
 import { liveHolds } from "~/adapters/db/repositories/product-workspace.server";
+import { getLogger } from "~/adapters/observability/logger.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
 import {
   readWorkspaceProduct,
@@ -165,7 +166,67 @@ function sameVariant(
   return a[key] === b[key];
 }
 
+/**
+ * The Shopify client throws on a GraphQL-level error rather than returning
+ * it, and an action that throws gives the page no answer at all: the save
+ * bar stays up with nothing said. So whatever is thrown comes back as a
+ * refusal with Shopify's own words, and is logged.
+ */
 export async function handleProductAction(input: {
+  admin: AdminApiContext;
+  principal: Principal;
+  actor: string | null;
+  productId: string;
+  formData: FormData;
+}): Promise<ProductActionResult> {
+  try {
+    return await runProductAction(input);
+  } catch (error) {
+    getLogger().error(
+      { err: error, productId: input.productId },
+      "Product workspace action failed",
+    );
+    return {
+      ok: false,
+      message: `The save stopped: ${thrownMessage(error)} Reload to see what was saved, then try again.`,
+    };
+  }
+}
+
+/** Shopify's GraphQL error messages when there are any, else the error's own. */
+export function thrownMessage(error: unknown): string {
+  const body =
+    error && typeof error === "object" && "body" in error
+      ? (error as { body?: unknown }).body
+      : null;
+  const errors =
+    body && typeof body === "object" && "errors" in body
+      ? (body as { errors?: unknown }).errors
+      : null;
+  const graphQLErrors =
+    errors && typeof errors === "object" && "graphQLErrors" in errors
+      ? (errors as { graphQLErrors?: unknown }).graphQLErrors
+      : null;
+  const messages = Array.isArray(graphQLErrors)
+    ? graphQLErrors.flatMap((entry: unknown) =>
+        entry &&
+        typeof entry === "object" &&
+        "message" in entry &&
+        typeof (entry as { message: unknown }).message === "string"
+          ? [(entry as { message: string }).message]
+          : [],
+      )
+    : [];
+  const text =
+    messages.length > 0
+      ? messages.join("; ")
+      : error instanceof Error
+        ? error.message
+        : "something went wrong";
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+async function runProductAction(input: {
   admin: AdminApiContext;
   principal: Principal;
   actor: string | null;

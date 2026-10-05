@@ -171,10 +171,7 @@ function TypeSection({ setup }: { setup: Matched }) {
           </s-text>
         </s-stack>
         <s-stack direction="inline" gap="small-300">
-          <s-button
-            variant="tertiary"
-            href={`/app/product-setup/types/${setup.typeId}`}
-          >
+          <s-button href={`/app/product-setup/types/${setup.typeId}`}>
             View in plan
           </s-button>
           <s-button command="--show" commandFor={TYPE_MODAL_ID}>
@@ -385,17 +382,16 @@ function Groups({
                   </s-grid>
                 </s-query-container>
               ) : null}
-              {perVariant.map((field) => (
-                <VariantField
-                  key={field.attributeId}
-                  field={field}
+              {perVariant.length > 0 ? (
+                <VariantTable
+                  fields={perVariant}
                   variants={variants}
                   inputs={inputs}
                   errors={errors}
-                  shown={rowById.get(field.attributeId)?.value ?? null}
+                  shown={(id) => rowById.get(id)?.value ?? null}
                   onChange={onChange}
                 />
-              ))}
+              ) : null}
             </s-stack>
           </s-section>
         );
@@ -404,70 +400,103 @@ function Groups({
   );
 }
 
-function VariantField({
-  field,
+/**
+ * The group's variant-level attributes as one table, the way the Variants
+ * tab edits prices: a row per variant, a column per attribute, so values
+ * are entered down a column and compared at a glance. An attribute this
+ * page cannot write sits under the table with what Shopify holds.
+ */
+function VariantTable({
+  fields,
   variants,
   inputs,
   errors,
   shown,
   onChange,
 }: {
-  field: AttributeField;
+  fields: AttributeField[];
   variants: ReadonlyArray<{ variantId: string; title: string }>;
   inputs: AttributeInputs;
   errors: Record<string, string>;
-  shown: string | null;
+  shown: (attributeId: string) => string | null;
   onChange: (key: string, value: AttributeInput) => void;
 }) {
+  const editable = fields.filter((field) => field.edit.kind !== "blocked");
+  const blocked = fields.filter((field) => field.edit.kind === "blocked");
+  const described = editable.filter((field) => field.description);
+  const missing = (field: AttributeField) =>
+    variants.filter((variant) =>
+      isEmptyInput(inputs[inputKey(field.attributeId, variant.variantId)]),
+    ).length;
+
   return (
-    <s-box
-      padding="base"
-      border="base"
-      borderRadius="base"
-      background="subdued"
-    >
-      <s-stack direction="block" gap="small-300">
-        <s-stack direction="block" gap="small-500">
-          <s-text type="strong">{field.name}</s-text>
-          <s-text color="subdued">
-            {[
-              field.required ? "Required on every variant" : "Per variant",
-              field.description,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
+    <s-stack direction="block" gap="small-300">
+      <s-stack direction="block" gap="small-500">
+        <s-text type="strong">Per variant</s-text>
+        {described.map((field) => (
+          <s-text key={field.attributeId} color="subdued">
+            {`${field.name}: ${field.description}`}
           </s-text>
-        </s-stack>
-        {field.edit.kind === "blocked" ? (
-          <Blocked reason={field.edit.reason} shown={shown} />
-        ) : (
-          <s-query-container>
-            <s-grid
-              gridTemplateColumns="@container (inline-size <= 560px) 1fr, 'repeat(3, minmax(0, 1fr))'"
-              gap="small-300"
-              alignItems="start"
-            >
-              {variants.map((variant) => {
-                const key = inputKey(field.attributeId, variant.variantId);
-                return (
-                  <FieldInput
-                    key={variant.variantId}
-                    field={field}
-                    label={variant.title}
-                    inputKey={key}
-                    value={inputs[key]}
-                    shown={null}
-                    error={errors[key]}
-                    plain
-                    onChange={(value) => onChange(key, value)}
-                  />
-                );
-              })}
-            </s-grid>
-          </s-query-container>
-        )}
+        ))}
       </s-stack>
-    </s-box>
+      {editable.length > 0 ? (
+        <s-table variant="auto">
+          <s-table-header-row>
+            <s-table-header listSlot="primary">Variant</s-table-header>
+            {editable.map((field) => {
+              const empty = missing(field);
+              return (
+                <s-table-header key={field.attributeId}>
+                  {`${field.name}${field.required ? " *" : ""}${
+                    empty > 0 && field.required ? ` (${empty} missing)` : ""
+                  }`}
+                </s-table-header>
+              );
+            })}
+          </s-table-header-row>
+          <s-table-body>
+            {variants.map((variant) => (
+              <s-table-row key={variant.variantId}>
+                <s-table-cell>
+                  <s-text type="strong">{variant.title}</s-text>
+                </s-table-cell>
+                {editable.map((field) => {
+                  const key = inputKey(field.attributeId, variant.variantId);
+                  return (
+                    <s-table-cell key={field.attributeId}>
+                      <s-box minInlineSize="140px" maxInlineSize="240px">
+                        <FieldInput
+                          field={field}
+                          label={`${field.name} of ${variant.title}`}
+                          inputKey={key}
+                          value={inputs[key]}
+                          shown={null}
+                          error={errors[key]}
+                          plain
+                          onChange={(value) => onChange(key, value)}
+                        />
+                      </s-box>
+                    </s-table-cell>
+                  );
+                })}
+              </s-table-row>
+            ))}
+          </s-table-body>
+        </s-table>
+      ) : null}
+      {editable.some((field) => field.required) ? (
+        <s-text color="subdued">* Required on every variant.</s-text>
+      ) : null}
+      {blocked.map((field) => (
+        <s-stack key={field.attributeId} direction="block" gap="small-500">
+          <s-text type="strong">{field.name}</s-text>
+          <Blocked
+            reason={field.edit.kind === "blocked" ? field.edit.reason : ""}
+            shown={shown(field.attributeId)}
+          />
+        </s-stack>
+      ))}
+    </s-stack>
   );
 }
 
@@ -487,8 +516,9 @@ const BOOLEAN_OPTIONS = [
 ];
 
 /**
- * One value's field. `plain` drops the description and requirement, for a
- * variant's field under an attribute that already states them.
+ * One value's field. `plain` is a field in a table cell: the label is for
+ * screen readers only and the description and requirement are stated by
+ * the column.
  */
 function FieldInput({
   field,
@@ -517,6 +547,7 @@ function FieldInput({
   const text = typeof value === "string" ? value : "";
   const common = {
     label,
+    ...(plain ? { labelAccessibilityVisibility: "exclusive" as const } : {}),
     ...(details ? { details } : {}),
     ...(error ? { error } : {}),
   };
@@ -573,6 +604,7 @@ function FieldInput({
         <Dropdown
           name={name}
           label={label}
+          hideLabel={plain}
           {...(details ? { details } : {})}
           {...(error ? { error } : {})}
           value={text}
@@ -585,6 +617,7 @@ function FieldInput({
         <Dropdown
           name={name}
           label={label}
+          hideLabel={plain}
           {...(details ? { details } : {})}
           {...(error ? { error } : {})}
           value={text}
