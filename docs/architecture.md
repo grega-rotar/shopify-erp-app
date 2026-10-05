@@ -561,6 +561,22 @@ update and read live before it is written, so a retry never discounts twice;
 and a restore writes only over what the campaign itself wrote, sending anything
 else to a `review` row and a `sale_price_conflict` exception.
 
+### Product list
+
+`/app/products` lists the catalogue snapshot (`catalog_product`), never
+Shopify, so it answers at once. Status views (All, Active, Draft, Archived)
+sit above a search (title, vendor, product type, any SKU), a chip per facet
+— vendor, product type, category, tag, each "is any of" the ticked values
+the snapshot holds (`catalogueFacetOptions`) — and one button for sort, hide
+archived and columns. Sort (title, updated, product type, vendor, category;
+empty values last), hide archived (`archived=hide`, only in All) and the
+facets are in the address (`domain/products/product-list` parses it), so the
+workspace's back link returns to the same list. The columns — which show and
+in what order, dragged or moved with the arrow keys — are each viewer's own,
+in their browser's storage, and fall back to the default when it is empty or
+blocked. Inventory, channels and created date are not columns: the snapshot
+does not hold them.
+
 ### Product workspace
 
 `/app/products/:id` is where a merchant looks at and edits one product,

@@ -11,10 +11,26 @@ import {
 
 import {
   PRODUCT_STATUS_FILTERS,
+  catalogueFacetOptions,
   listCatalogueProducts,
+  type ProductListRow,
   type ProductStatusFilter,
 } from "~/adapters/db/repositories/product-workspace.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
+import {
+  DEFAULT_PRODUCT_SORT,
+  hasProductFilters,
+  parseProductFilters,
+  parseProductSort,
+  type ProductColumn,
+  type ProductSort,
+} from "~/domain/products/product-list";
+import {
+  COLUMN_LABEL,
+  ProductFilterChips,
+  ProductViewOptions,
+  useProductColumns,
+} from "~/web/components/product-list-view";
 import { formatListDateTime } from "~/web/lib/datetime";
 import { formatMoney } from "~/web/lib/money";
 import { principalFromSession } from "~/web/lib/principal.server";
@@ -23,8 +39,11 @@ import { STATUS_LABEL, productPath } from "~/web/lib/product-workspace";
 /**
  * Products: the way into each product's workspace (docs/architecture.md
  * § Product workspace). A list of the catalogue snapshot — searched by
- * title, vendor, type or SKU, filtered by status — where opening a row
- * opens the product here rather than in Shopify's editor.
+ * title, vendor, type or SKU, filtered by status and by vendor, product
+ * type, category or tag, sorted, with the columns each viewer chooses —
+ * where opening a row opens the product here rather than in Shopify's
+ * editor. Sort and filters are in the address; the column layout is the
+ * viewer's own, kept in their browser.
  *
  * It reads the snapshot, not Shopify, so it answers at once for any
  * catalogue size; the snapshot follows every `products/update` and is read
@@ -45,25 +64,46 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const q = url.searchParams.get("q")?.trim() ?? "";
   const status = statusFilter(url.searchParams.get("status"));
+  const hideArchived = url.searchParams.get("archived") === "hide";
+  const sort = parseProductSort(
+    url.searchParams.get("sort"),
+    url.searchParams.get("dir"),
+  );
+  const filters = parseProductFilters((facet) =>
+    url.searchParams.getAll(facet),
+  );
   const page = Math.max(
     1,
     Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1,
   );
 
-  const result = await listCatalogueProducts(principal, {
-    q,
-    status,
-    page,
-    pageSize: PAGE_SIZE,
-  });
+  const [result, facetOptions] = await Promise.all([
+    listCatalogueProducts(principal, {
+      q,
+      status,
+      hideArchived,
+      filters,
+      sort,
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+    catalogueFacetOptions(principal),
+  ]);
   return {
     q,
     status,
+    hideArchived,
+    sort,
+    filters,
+    facetOptions,
     page,
     total: result.total,
     pages: Math.max(1, Math.ceil(result.total / PAGE_SIZE)),
     snapshotAt: result.snapshotAt?.toISOString() ?? null,
-    rows: result.rows,
+    rows: result.rows.map((row) => ({
+      ...row,
+      updatedAt: row.updatedAt?.toISOString() ?? null,
+    })),
   };
 };
 
@@ -74,9 +114,101 @@ const FILTER_LABEL: Record<ProductStatusFilter, string> = {
   archived: "Archived",
 };
 
+type ListRow = Omit<ProductListRow, "updatedAt"> & { updatedAt: string | null };
+
+function priceText(row: ListRow): string {
+  if (row.minPriceMinor === null || !row.currency) return "—";
+  return row.minPriceMinor === row.maxPriceMinor
+    ? formatMoney(row.minPriceMinor, row.currency)
+    : `${formatMoney(row.minPriceMinor, row.currency)} – ${formatMoney(row.maxPriceMinor ?? row.minPriceMinor, row.currency)}`;
+}
+
+/** How each column's heading lays out in the narrow, list form of the table. */
+const COLUMN_HEADER: Record<
+  ProductColumn,
+  {
+    listSlot: "inline" | "secondary" | "labeled";
+    format?: "numeric" | "currency";
+  }
+> = {
+  status: { listSlot: "inline" },
+  category: { listSlot: "labeled" },
+  productType: { listSlot: "secondary" },
+  vendor: { listSlot: "labeled" },
+  variants: { listSlot: "labeled", format: "numeric" },
+  price: { listSlot: "labeled", format: "currency" },
+  tags: { listSlot: "labeled" },
+  updated: { listSlot: "labeled" },
+};
+
+function ColumnCell({ column, row }: { column: ProductColumn; row: ListRow }) {
+  switch (column) {
+    case "status":
+      return (
+        <s-table-cell>
+          <s-badge
+            {...(row.status === "DRAFT" ? { tone: "info" as const } : {})}
+          >
+            {STATUS_LABEL[row.status ?? ""] ?? "Unknown"}
+          </s-badge>
+        </s-table-cell>
+      );
+    case "category":
+      return <s-table-cell>{row.categoryName || "—"}</s-table-cell>;
+    case "productType":
+      return <s-table-cell>{row.productType || "—"}</s-table-cell>;
+    case "vendor":
+      return <s-table-cell>{row.vendor || "—"}</s-table-cell>;
+    case "variants":
+      return <s-table-cell>{row.variants}</s-table-cell>;
+    case "price":
+      return <s-table-cell>{priceText(row)}</s-table-cell>;
+    case "tags":
+      return (
+        <s-table-cell>
+          {row.tags.length > 0 ? row.tags.join(", ") : "—"}
+        </s-table-cell>
+      );
+    case "updated":
+      return (
+        <s-table-cell>
+          {row.updatedAt ? formatListDateTime(row.updatedAt) : "—"}
+        </s-table-cell>
+      );
+  }
+}
+
+/** The default sort stays out of the address. */
+function sortParams(sort: ProductSort): {
+  sort: string | null;
+  dir: string | null;
+} {
+  const isDefault =
+    sort.key === DEFAULT_PRODUCT_SORT.key &&
+    sort.direction === DEFAULT_PRODUCT_SORT.direction;
+  return isDefault
+    ? { sort: null, dir: null }
+    : { sort: sort.key, dir: sort.direction };
+}
+
 export default function Products() {
-  const { q, status, page, pages, total, rows, snapshotAt } =
-    useLoaderData<typeof loader>();
+  const {
+    q,
+    status,
+    hideArchived,
+    sort,
+    filters,
+    facetOptions,
+    page,
+    pages,
+    total,
+    rows,
+    snapshotAt,
+  } = useLoaderData<typeof loader>();
+  const [columns, setColumns] = useProductColumns();
+  const visibleColumns = columns
+    .filter((column) => column.visible)
+    .map((column) => column.key);
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const navigation = useNavigation();
@@ -84,11 +216,15 @@ export default function Products() {
   useEffect(() => setSearch(q), [q]);
 
   const listQuery = params.toString();
-  const go = (patch: Record<string, string | null>) => {
+  const go = (patch: Record<string, string | readonly string[] | null>) => {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(patch)) {
-      if (value === null || value === "") next.delete(key);
-      else next.set(key, value);
+      next.delete(key);
+      if (typeof value === "string") {
+        if (value !== "") next.set(key, value);
+      } else if (value) {
+        for (const item of value) next.append(key, item);
+      }
     }
     void navigate(
       `/app/products${next.toString() ? `?${next.toString()}` : ""}`,
@@ -142,12 +278,38 @@ export default function Products() {
                     ),
                 )}
               </s-stack>
-              <s-search-field
-                label="Search products"
-                labelAccessibilityVisibility="exclusive"
-                placeholder="Search by title, vendor, type or SKU"
-                value={search}
-                onInput={(event) => setSearch(event.currentTarget.value)}
+              <s-grid
+                gridTemplateColumns="1fr auto"
+                gap="small-300"
+                alignItems="center"
+              >
+                <s-search-field
+                  label="Search products"
+                  labelAccessibilityVisibility="exclusive"
+                  placeholder="Search by title, vendor, type or SKU"
+                  value={search}
+                  onInput={(event) => setSearch(event.currentTarget.value)}
+                />
+                <ProductViewOptions
+                  sort={sort}
+                  onSortChange={(next) =>
+                    go({ ...sortParams(next), page: null })
+                  }
+                  hideArchived={hideArchived}
+                  onHideArchivedChange={(hide) =>
+                    go({ archived: hide ? "hide" : null, page: null })
+                  }
+                  hideArchivedDisabled={status !== "all"}
+                  columns={columns}
+                  onColumnsChange={setColumns}
+                />
+              </s-grid>
+              <ProductFilterChips
+                filters={filters}
+                options={facetOptions}
+                onChange={(facet, values) =>
+                  go({ [facet]: values, page: null })
+                }
               />
             </s-stack>
           </s-box>
@@ -155,7 +317,11 @@ export default function Products() {
           {rows.length === 0 ? (
             <s-box padding="base">
               <s-text color="subdued">
-                {total === 0 && q === "" && status === "all"
+                {total === 0 &&
+                q === "" &&
+                status === "all" &&
+                !hideArchived &&
+                !hasProductFilters(filters)
                   ? "The catalogue has not been read yet. It is read every night, and after a sale campaign asks for it."
                   : "No products match."}
               </s-text>
@@ -164,15 +330,18 @@ export default function Products() {
             <s-table variant="auto" {...(loading ? { loading: true } : {})}>
               <s-table-header-row>
                 <s-table-header listSlot="primary">Product</s-table-header>
-                <s-table-header listSlot="inline">Status</s-table-header>
-                <s-table-header listSlot="secondary">Type</s-table-header>
-                <s-table-header listSlot="secondary">Vendor</s-table-header>
-                <s-table-header listSlot="secondary" format="numeric">
-                  Variants
-                </s-table-header>
-                <s-table-header listSlot="secondary" format="currency">
-                  Price
-                </s-table-header>
+                {visibleColumns.map((column) => {
+                  const { listSlot, format } = COLUMN_HEADER[column];
+                  return (
+                    <s-table-header
+                      key={column}
+                      listSlot={listSlot}
+                      {...(format ? { format } : {})}
+                    >
+                      {COLUMN_LABEL[column]}
+                    </s-table-header>
+                  );
+                })}
               </s-table-header-row>
               <s-table-body>
                 {rows.map((row) => (
@@ -214,25 +383,9 @@ export default function Products() {
                         </s-stack>
                       </s-stack>
                     </s-table-cell>
-                    <s-table-cell>
-                      <s-badge
-                        {...(row.status === "DRAFT"
-                          ? { tone: "info" as const }
-                          : {})}
-                      >
-                        {STATUS_LABEL[row.status ?? ""] ?? "Unknown"}
-                      </s-badge>
-                    </s-table-cell>
-                    <s-table-cell>{row.productType || "—"}</s-table-cell>
-                    <s-table-cell>{row.vendor || "—"}</s-table-cell>
-                    <s-table-cell>{row.variants}</s-table-cell>
-                    <s-table-cell>
-                      {row.minPriceMinor === null || !row.currency
-                        ? "—"
-                        : row.minPriceMinor === row.maxPriceMinor
-                          ? formatMoney(row.minPriceMinor, row.currency)
-                          : `${formatMoney(row.minPriceMinor, row.currency)} – ${formatMoney(row.maxPriceMinor ?? row.minPriceMinor, row.currency)}`}
-                    </s-table-cell>
+                    {visibleColumns.map((column) => (
+                      <ColumnCell key={column} column={column} row={row} />
+                    ))}
                   </s-table-row>
                 ))}
               </s-table-body>

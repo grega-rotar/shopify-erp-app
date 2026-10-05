@@ -306,7 +306,10 @@ current list. The ones a person may want to decide on:
   overwrite is the portal's setting and is not in the contract, so the page
   says the source may replace content rather than naming fields.
 - **The Products list reads the catalogue snapshot**, so a product created
-  since the last `products/update` or nightly read appears after it.
+  since the last `products/update` or nightly read appears after it. For
+  the same reason it has no inventory, channels or created-date column or
+  sort (Shopify's index has them); adding them means reading them into the
+  snapshot. Each facet offers at most 500 values.
 
 ### T-25 — Product setup: a plan with no Shopify side yet
 
