@@ -308,21 +308,39 @@ has no `build:` for that reason; `APP_IMAGE` in `.env` overrides the tag.
 
 ### Continuous deployment
 
-`.github/workflows/deploy.yml` runs on every push to `main` (one at a time,
-concurrency group `deploy-prod`). It builds the image on GitHub Actions, pushes
-it tagged with the full commit SHA and `latest`, then SSHes to the VM as the
-`deploy` user and, in `/data/stack/apps/recharge-hub`, runs
-`docker compose pull migrate web worker` and `docker compose up -d
---remove-orphans` with `APP_IMAGE` exported to that SHA (the shell variable wins
-over `.env`). The job fails unless `http://127.0.0.1:3192/healthz` answers 200
-within 60 seconds, and prints the `migrate` and `web` logs when it does not.
+`.github/workflows/deploy.yml` (workflow `ci`) has two jobs.
+
+`check` runs on every pull request and every push to `main`: `npm ci`,
+`npm run typecheck`, `npm run lint`, and `npm test` with `SKIP_DB_TESTS=1`, so
+`tests/db/` is skipped (there is no database in CI). A newer push to a pull
+request cancels its running check.
+
+`deploy` runs only on a push to `main`, only after `check` passes, and one at a
+time (concurrency group `deploy-prod`). It builds the image on GitHub Actions,
+pushes it tagged with the full commit SHA and `latest`, then SSHes to the VM as
+the `deploy` user and, in `/data/stack/apps/recharge-hub`:
+
+1. records the image the running `web` container uses;
+2. runs `docker compose pull migrate web worker` and `docker compose up -d
+   --remove-orphans` with `APP_IMAGE` exported to the new SHA (the shell
+   variable wins over `.env`);
+3. waits up to 60 seconds for `http://127.0.0.1:3192/healthz` to answer 200.
+
+If the migration or the health check fails, it prints the `migrate` and `web`
+logs and rolls `web` and `worker` back to the recorded image with
+`docker compose up -d --no-deps web worker`, then fails the run either way.
+Rollback does not undo a migration that was applied: a deploy whose migration
+succeeded but whose code is broken goes back to old code on the new schema, so
+keep migrations additive (expand first, remove columns in a later release).
 
 It only swaps images: changes to `docker-compose.yml`, `ops/`, or `.env` on the
-server are still applied by hand with `git pull` in the checkout. To roll back,
-re-run an earlier workflow run, or run the same `export APP_IMAGE=…:<sha>` and
-`docker compose up -d` on the server.
+server are still applied by hand with `git pull` in the checkout. To go back to
+an older release by hand, re-run that commit's workflow run, or run
+`export APP_IMAGE=time4action/recharge-hub:<sha>` and `docker compose up -d` on
+the server.
 
-Repository secrets:
+Secrets, on the `Recharge` GitHub environment (the `deploy` job declares
+`environment: Recharge`; repository secrets would work too):
 
 | Secret               | Value                                               |
 | -------------------- | --------------------------------------------------- |

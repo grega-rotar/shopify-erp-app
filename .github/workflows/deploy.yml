@@ -1,19 +1,51 @@
-# Builds the image on every push to main, pushes it to Docker Hub tagged with
-# the commit SHA and `latest`, then rolls the production stack onto that exact
-# SHA over SSH. The VM only pulls; see docs/development.md "Production Compose".
-name: deploy
+# Checks every pull request and every push to main. On main, a green check
+# builds the image, pushes it to Docker Hub tagged with the commit SHA and
+# `latest`, and rolls the production stack onto that exact SHA over SSH, rolling
+# back to the previous image if it does not come up healthy. The VM only pulls;
+# see docs/development.md "Continuous deployment".
+name: ci
 on:
   push:
     branches: [main]
+  pull_request:
 
-concurrency: deploy-prod
+# A newer push to the same pull request supersedes the running check.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   IMAGE: time4action/recharge-hub
 
 jobs:
-  deploy:
+  check:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run lint
+      # No database here; tests/db/ skips itself.
+      - run: npm test
+        env:
+          SKIP_DB_TESTS: "1"
+
+  deploy:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The Docker Hub and SSH secrets are environment secrets on "Recharge".
+    environment: Recharge
+    concurrency: deploy-prod
     steps:
       - uses: actions/checkout@v4
 
@@ -41,14 +73,51 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
           script: |
-            set -e
-            cd /data/stack/apps/recharge-hub
-            export APP_IMAGE=time4action/recharge-hub:${{ github.sha }}
-            docker compose pull migrate web worker
-            docker compose up -d --remove-orphans
-            for i in $(seq 1 30); do
-              curl -fsS http://127.0.0.1:3192/healthz >/dev/null && echo "healthy" && exit 0
-              sleep 2
-            done
-            echo "web not healthy"; docker compose logs --tail=50 migrate web
+            set -u
+            cd /data/stack/apps/recharge-hub || exit 1
+            NEW=time4action/recharge-hub:${{ github.sha }}
+
+            # The image web runs now is what a failed deploy goes back to.
+            PREV=""
+            WEB_ID=$(docker compose ps -q web 2>/dev/null || true)
+            if [ -n "$WEB_ID" ]; then
+              PREV=$(docker inspect --format '{{.Config.Image}}' "$WEB_ID")
+            fi
+            echo "running: ${PREV:-nothing}  deploying: $NEW"
+
+            healthy() {
+              for i in $(seq 1 30); do
+                curl -fsS http://127.0.0.1:3192/healthz >/dev/null && return 0
+                sleep 2
+              done
+              return 1
+            }
+
+            export APP_IMAGE=$NEW
+            # A failed pull changes nothing on the server.
+            docker compose pull migrate web worker || exit 1
+
+            if docker compose up -d --remove-orphans && healthy; then
+              echo "healthy on $NEW"
+              exit 0
+            fi
+
+            echo "deploy of $NEW failed"
+            docker compose logs --tail=50 migrate web
+
+            if [ -z "$PREV" ] || [ "$PREV" = "$NEW" ]; then
+              echo "no previous image to roll back to"
+              exit 1
+            fi
+
+            # --no-deps skips migrate: a migration that already ran stays
+            # applied, and a failed one would only fail again.
+            echo "rolling back to $PREV"
+            export APP_IMAGE=$PREV
+            if docker compose up -d --no-deps web worker && healthy; then
+              echo "rolled back to $PREV"
+            else
+              echo "rollback is not healthy either"
+              docker compose logs --tail=50 web
+            fi
             exit 1
