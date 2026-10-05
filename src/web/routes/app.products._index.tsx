@@ -19,6 +19,7 @@ import {
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import {
   DEFAULT_PRODUCT_SORT,
+  PRODUCT_FACETS,
   hasProductFilters,
   parseProductFilters,
   parseProductSort,
@@ -28,6 +29,7 @@ import {
 import {
   COLUMN_LABEL,
   ProductFilterChips,
+  ProductSearchBar,
   ProductViewOptions,
   useProductColumns,
 } from "~/web/components/product-list-view";
@@ -231,12 +233,14 @@ export default function Products() {
     );
   };
 
-  // A search is sent once typing pauses, not on every key.
+  // A search is sent once typing pauses, not on every key — and not while
+  // another change to the list is on its way, whose address it would undo.
+  const idle = navigation.state === "idle";
   useEffect(() => {
-    if (search.trim() === q) return;
+    if (search.trim() === q || !idle) return;
     const timer = setTimeout(() => go({ q: search.trim(), page: null }), 350);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, q, idle]);
 
   const open = (productId: string) => {
     const path = productPath(productId);
@@ -283,12 +287,19 @@ export default function Products() {
                 gap="small-300"
                 alignItems="center"
               >
-                <s-search-field
-                  label="Search products"
-                  labelAccessibilityVisibility="exclusive"
-                  placeholder="Search by title, vendor, type or SKU"
-                  value={search}
-                  onInput={(event) => setSearch(event.currentTarget.value)}
+                <ProductSearchBar
+                  search={search}
+                  onSearchChange={setSearch}
+                  filters={filters}
+                  options={facetOptions}
+                  onFilterChange={(facet, values, clearSearch) => {
+                    if (clearSearch) setSearch("");
+                    go({
+                      [facet]: values,
+                      ...(clearSearch ? { q: null } : {}),
+                      page: null,
+                    });
+                  }}
                 />
                 <ProductViewOptions
                   sort={sort}
@@ -309,6 +320,14 @@ export default function Products() {
                 options={facetOptions}
                 onChange={(facet, values) =>
                   go({ [facet]: values, page: null })
+                }
+                onClearAll={() =>
+                  go({
+                    ...Object.fromEntries(
+                      PRODUCT_FACETS.map((facet) => [facet, null]),
+                    ),
+                    page: null,
+                  })
                 }
               />
             </s-stack>

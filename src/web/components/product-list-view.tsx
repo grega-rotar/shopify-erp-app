@@ -1,9 +1,12 @@
 import {
+  Fragment,
   useEffect,
   useId,
+  useRef,
   useState,
   type DragEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 
 import {
@@ -23,15 +26,16 @@ import {
 
 /**
  * The product list's view controls, the way the admin's own product index
- * has them: a chip per facet that filters by "is any of", and one button
+ * has them: a search box that suggests filters as you type, a chip per
+ * filter in force that filters by "is any of", and one button
  * that opens sort, hide archived and the columns — each column shown or
  * hidden with its eye, and put in order by dragging its handle (or with the
  * arrow keys on the handle).
  *
- * Built from Polaris pieces only (`s-clickable-chip`, `s-popover`,
- * `s-clickable`, `s-checkbox`, `s-switch`), with no styling of our own. The
- * one plain element is the `div` that carries native drag and drop, which no
- * Polaris component exposes.
+ * Built from Polaris pieces (`s-clickable-chip`, `s-popover`, `s-clickable`,
+ * `s-checkbox`, `s-switch`). Plain elements only where Polaris has nothing:
+ * the `div` that carries native drag and drop, and the search suggestions'
+ * list (see `ProductSearchBar`).
  */
 
 export const COLUMN_LABEL: Record<ProductColumn, string> = {
@@ -201,20 +205,26 @@ function FacetChip({
   );
 }
 
-/** One chip per facet, and a way to clear them all once any is set. */
+/**
+ * The filters in force, one chip each that reopens its values, and a way to
+ * clear them all. Filters are added from the search box's suggestions.
+ */
 export function ProductFilterChips({
   filters,
   options,
   onChange,
+  onClearAll,
 }: {
   filters: ProductFilters;
   options: ProductFilters;
   onChange: (facet: ProductFacet, values: string[]) => void;
+  onClearAll: () => void;
 }) {
   const active = PRODUCT_FACETS.filter((facet) => filters[facet].length > 0);
+  if (active.length === 0) return null;
   return (
     <s-stack direction="inline" gap="small-300" alignItems="center">
-      {PRODUCT_FACETS.map((facet) => (
+      {active.map((facet) => (
         <FacetChip
           key={facet}
           facet={facet}
@@ -223,15 +233,417 @@ export function ProductFilterChips({
           onChange={(values) => onChange(facet, values)}
         />
       ))}
-      {active.length > 0 ? (
-        <s-button
-          variant="tertiary"
-          onClick={() => active.forEach((facet) => onChange(facet, []))}
-        >
-          Clear all
-        </s-button>
-      ) : null}
+      <s-button variant="tertiary" onClick={onClearAll}>
+        Clear all
+      </s-button>
     </s-stack>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Search and filter                                                          */
+/* -------------------------------------------------------------------------- */
+
+const FACET_PLURAL: Record<ProductFacet, string> = {
+  vendor: "vendors",
+  productType: "product types",
+  category: "categories",
+  tag: "tags",
+};
+
+/** How many matching values of each facet the search suggests. */
+const VALUES_PER_FACET = 3;
+
+type SearchItem =
+  | { kind: "facet"; facet: ProductFacet }
+  | { kind: "value"; facet: ProductFacet; value: string };
+
+/**
+ * The search box, which also filters, the way the admin's product index
+ * does it. Typing searches products and, beneath the box, suggests the
+ * filters whose name matches ("Vendor is…") and the values that match
+ * ("Vendor is Aeryn"). Choosing a filter puts it in front of the box —
+ * "Vendor is" — and the list becomes that filter's values with checkboxes,
+ * narrowed by what is typed. Arrow keys move through the list, Enter picks
+ * or ticks, Backspace in an empty box drops back to searching, Escape
+ * closes.
+ *
+ * Polaris has no combobox and its popover takes focus from the field, so
+ * the list is drawn here: Polaris boxes and rows inside one plain `div`
+ * placed under the field. Its position and shadow are the only styling of
+ * our own. The list keeps focus in the field by refusing mouse-down.
+ */
+export function ProductSearchBar({
+  search,
+  onSearchChange,
+  filters,
+  options,
+  onFilterChange,
+}: {
+  search: string;
+  onSearchChange: (text: string) => void;
+  filters: ProductFilters;
+  options: ProductFilters;
+  /** `clearSearch`: drop the typed search in the same change. */
+  onFilterChange: (
+    facet: ProductFacet,
+    values: string[],
+    clearSearch: boolean,
+  ) => void;
+}) {
+  const wrapper = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLElementTagNameMap["s-search-field"]>(null);
+  const [facet, setFacet] = useState<ProductFacet | null>(null);
+  const [facetText, setFacetText] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const [place, setPlace] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  const text = (facet ? facetText : search).trim().toLowerCase();
+
+  // In a filter: its values, the ticked ones that the snapshot no longer
+  // has first so they can be unticked.
+  const facetValues = facet
+    ? [
+        ...filters[facet].filter((v) => !options[facet].includes(v)),
+        ...options[facet],
+      ].filter((v) => v.toLowerCase().includes(text))
+    : [];
+
+  // Searching: the filters whose name matches, then matching values.
+  const searchItems: SearchItem[] = facet
+    ? []
+    : [
+        ...PRODUCT_FACETS.filter((f) =>
+          FACET_LABEL[f].toLowerCase().includes(text),
+        ).map((f): SearchItem => ({ kind: "facet", facet: f })),
+        ...(text === ""
+          ? []
+          : PRODUCT_FACETS.flatMap((f) =>
+              options[f]
+                .filter((v) => v.toLowerCase().includes(text))
+                .slice(0, VALUES_PER_FACET)
+                .map((value): SearchItem => ({
+                  kind: "value",
+                  facet: f,
+                  value,
+                })),
+            )),
+      ];
+  const count = facet ? facetValues.length : searchItems.length;
+  const active = Math.min(highlight, Math.max(0, count - 1));
+
+  const measure = () => {
+    const rect = wrapper.current?.getBoundingClientRect();
+    if (rect) {
+      setPlace({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+  };
+  useEffect(() => {
+    if (!open) return;
+    measure();
+    // Focus can be lost without a blur this box hears, so a press anywhere
+    // else closes the list as well.
+    const outside = (event: PointerEvent) => {
+      if (!event.composedPath().includes(wrapper.current as EventTarget)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    document.addEventListener("pointerdown", outside);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+      document.removeEventListener("pointerdown", outside);
+    };
+  }, [open, facet]);
+
+  const toggle = (f: ProductFacet, value: string, clearSearch = false) =>
+    onFilterChange(
+      f,
+      filters[f].includes(value)
+        ? filters[f].filter((v) => v !== value)
+        : [...filters[f], value],
+      clearSearch,
+    );
+
+  const enterFacet = (f: ProductFacet) => {
+    // What was typed found the filter; it is not a search.
+    onSearchChange("");
+    setFacet(f);
+    setFacetText("");
+    setHighlight(0);
+    setOpen(true);
+    field.current?.focus();
+  };
+  const leaveFacet = () => {
+    setFacet(null);
+    setFacetText("");
+    setHighlight(0);
+  };
+
+  const activate = (index: number) => {
+    // A clicked row can take focus and then vanish as the list changes,
+    // leaving focus nowhere; it goes back to the box either way.
+    field.current?.focus();
+    if (facet) {
+      const value = facetValues[index];
+      if (value !== undefined) toggle(facet, value);
+      return;
+    }
+    const item = searchItems[index];
+    if (!item) return;
+    if (item.kind === "facet") {
+      enterFacet(item.facet);
+    } else {
+      // The typed words were the way to the value, not a search.
+      toggle(item.facet, item.value, true);
+      setHighlight(0);
+    }
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        event.preventDefault();
+        setOpen(true);
+        if (count === 0) return;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setHighlight((active + step + count) % count);
+        return;
+      }
+      case "Enter":
+        if (open && count > 0) {
+          event.preventDefault();
+          activate(active);
+        }
+        return;
+      case "Escape":
+        event.preventDefault();
+        if (facet && facetText === "") leaveFacet();
+        else setOpen(false);
+        return;
+      case "Backspace":
+        if (facet && facetText === "") {
+          event.preventDefault();
+          leaveFacet();
+        }
+        return;
+    }
+  };
+
+  const enterHint = (
+    <s-stack direction="inline" gap="small-500" alignItems="center">
+      <s-icon type="enter" tone="neutral" size="small" />
+      <s-text color="subdued">Enter</s-text>
+    </s-stack>
+  );
+
+  const row = (index: number, content: ReactNode, onClick?: () => void) => {
+    const isActive = index === active;
+    const inner = (
+      <s-grid
+        gridTemplateColumns="1fr auto"
+        gap="small-200"
+        alignItems="center"
+      >
+        {content}
+        {isActive ? enterHint : null}
+      </s-grid>
+    );
+    return (
+      <div key={index} onMouseEnter={() => setHighlight(index)}>
+        {onClick ? (
+          <s-clickable
+            borderRadius="base"
+            paddingInline="small-200"
+            paddingBlock="small-400"
+            inlineSize="100%"
+            {...(isActive ? { background: "subdued" as const } : {})}
+            onClick={onClick}
+          >
+            {inner}
+          </s-clickable>
+        ) : (
+          <s-box
+            borderRadius="base"
+            paddingInline="small-200"
+            paddingBlock="small-400"
+            {...(isActive ? { background: "subdued" as const } : {})}
+          >
+            {inner}
+          </s-box>
+        )}
+      </div>
+    );
+  };
+
+  const facetIndexOffset = searchItems.filter((i) => i.kind === "facet").length;
+
+  return (
+    <div
+      ref={wrapper}
+      onKeyDown={onKeyDown}
+      onFocus={() => setOpen(true)}
+      onBlur={(event) => {
+        if (!wrapper.current?.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <s-grid
+        gridTemplateColumns={facet ? "auto 1fr" : "1fr"}
+        gap="small-300"
+        alignItems="center"
+      >
+        {facet ? (
+          <s-clickable-chip
+            removable
+            color="strong"
+            accessibilityLabel={`${FACET_LABEL[facet]} is. Remove to search instead.`}
+            onRemove={() => {
+              leaveFacet();
+              field.current?.focus();
+            }}
+          >
+            {`${FACET_LABEL[facet]} is`}
+          </s-clickable-chip>
+        ) : null}
+        <s-search-field
+          ref={field}
+          label="Search and filter products"
+          labelAccessibilityVisibility="exclusive"
+          placeholder={
+            facet
+              ? `Search ${FACET_PLURAL[facet]}`
+              : "Search or filter by vendor, product type, category or tag"
+          }
+          value={facet ? facetText : search}
+          onInput={(event) => {
+            const value = event.currentTarget.value;
+            setHighlight(0);
+            setOpen(true);
+            if (facet) setFacetText(value);
+            else onSearchChange(value);
+          }}
+        />
+      </s-grid>
+
+      {open && place && count + (facet ? 1 : 0) > 0 ? (
+        <div
+          role="listbox"
+          aria-label={facet ? FACET_LABEL[facet] : "Suggestions"}
+          onMouseDown={(event) => event.preventDefault()}
+          style={{
+            position: "fixed",
+            top: place.top,
+            left: place.left,
+            width: Math.min(360, place.width),
+            zIndex: 30,
+            borderRadius: 12,
+            boxShadow:
+              "0 4px 12px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.06)",
+          }}
+        >
+          <s-box
+            background="base"
+            borderRadius="large"
+            padding="small-300"
+            maxBlockSize="360px"
+            overflow="hidden"
+          >
+            <s-scroll-box maxBlockSize="340px">
+              <s-stack direction="block" gap="none">
+                {facet ? (
+                  facetValues.length === 0 ? (
+                    <s-box padding="small-200">
+                      <s-text color="subdued">
+                        {options[facet].length === 0
+                          ? `No product has a ${FACET_LABEL[facet].toLowerCase()} yet.`
+                          : "Nothing matches."}
+                      </s-text>
+                    </s-box>
+                  ) : (
+                    facetValues.map((value, index) =>
+                      row(
+                        index,
+                        <s-checkbox
+                          label={value}
+                          checked={filters[facet].includes(value)}
+                          onChange={() => toggle(facet, value)}
+                        />,
+                      ),
+                    )
+                  )
+                ) : (
+                  <>
+                    {facetIndexOffset > 0 ? (
+                      <s-box paddingInline="small-200" paddingBlock="small-500">
+                        <s-text color="subdued">Filters</s-text>
+                      </s-box>
+                    ) : null}
+                    {searchItems.map((item, index) =>
+                      item.kind === "facet" ? (
+                        row(
+                          index,
+                          <s-stack
+                            direction="inline"
+                            gap="small-200"
+                            alignItems="center"
+                          >
+                            <s-icon type="filter" />
+                            <s-text>{`${FACET_LABEL[item.facet]} is…`}</s-text>
+                          </s-stack>,
+                          () => activate(index),
+                        )
+                      ) : (
+                        <Fragment key={`${item.facet}:${item.value}`}>
+                          {index === facetIndexOffset ? (
+                            <s-box
+                              paddingInline="small-200"
+                              paddingBlock="small-500"
+                            >
+                              <s-text color="subdued">Matching values</s-text>
+                            </s-box>
+                          ) : null}
+                          {row(
+                            index,
+                            <s-stack
+                              direction="inline"
+                              gap="small-200"
+                              alignItems="center"
+                            >
+                              <s-icon
+                                type={
+                                  filters[item.facet].includes(item.value)
+                                    ? "check"
+                                    : "search"
+                                }
+                              />
+                              <s-text>
+                                {`${FACET_LABEL[item.facet]} is `}
+                                <s-text type="strong">{item.value}</s-text>
+                              </s-text>
+                            </s-stack>,
+                            () => activate(index),
+                          )}
+                        </Fragment>
+                      ),
+                    )}
+                  </>
+                )}
+              </s-stack>
+            </s-scroll-box>
+          </s-box>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
