@@ -302,11 +302,42 @@ touch another tenant's rows.
 ## Production Compose
 
 The production VM has too little memory to build the image next to PostgreSQL,
-so the image is built on a workstation, pushed to Docker Hub as
+so the image is built elsewhere, pushed to Docker Hub as
 `time4action/recharge-hub`, and only pulled on the server. `docker-compose.yml`
 has no `build:` for that reason; `APP_IMAGE` in `.env` overrides the tag.
 
+### Continuous deployment
+
+`.github/workflows/deploy.yml` runs on every push to `main` (one at a time,
+concurrency group `deploy-prod`). It builds the image on GitHub Actions, pushes
+it tagged with the full commit SHA and `latest`, then SSHes to the VM as the
+`deploy` user and, in `/data/stack/apps/recharge-hub`, runs
+`docker compose pull migrate web worker` and `docker compose up -d
+--remove-orphans` with `APP_IMAGE` exported to that SHA (the shell variable wins
+over `.env`). The job fails unless `http://127.0.0.1:3192/healthz` answers 200
+within 60 seconds, and prints the `migrate` and `web` logs when it does not.
+
+It only swaps images: changes to `docker-compose.yml`, `ops/`, or `.env` on the
+server are still applied by hand with `git pull` in the checkout. To roll back,
+re-run an earlier workflow run, or run the same `export APP_IMAGE=…:<sha>` and
+`docker compose up -d` on the server.
+
+Repository secrets:
+
+| Secret               | Value                                               |
+| -------------------- | --------------------------------------------------- |
+| `DOCKERHUB_USERNAME` | Docker Hub account that can push the image          |
+| `DOCKERHUB_TOKEN`    | Docker Hub access token (read/write) for it         |
+| `DEPLOY_HOST`        | The VM's hostname or IP                             |
+| `DEPLOY_SSH_KEY`     | Private key whose public half is in `deploy`'s `authorized_keys` |
+| `DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, the `SHA256:…` part) |
+
+The `deploy` user must be in the `docker` group, be able to read the checkout,
+and have `curl` available.
+
 ### Build and push (workstation)
+
+Still works for a manual or off-`main` build.
 
 ```bat
 docker login
