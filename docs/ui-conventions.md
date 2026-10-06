@@ -12,6 +12,11 @@
 - **A card whose only content is a pointer elsewhere becomes a line, not a card.**
 - **Sample data is always the merchant's own.** Never fabricated examples, especially not
   next to a real preview.
+- **Row actions stay in view.** Up to three short actions are bordered buttons on one line
+  in an `s-grid` (an inline `s-stack` wraps them under each other in a narrow column),
+  with the usual outcome last. No "⋯" menu for these: it hides one action behind a
+  second button and opens over the row below. Navigation (open the sync, the order) is a
+  link with the row's subject, not a row action.
 
 ## Destructive writes
 - Anything that writes to the merchant's ERP — names, created articles, stock, orders —

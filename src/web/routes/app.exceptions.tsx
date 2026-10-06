@@ -473,7 +473,6 @@ export default function Exceptions() {
 
                       <s-table-body>
                         {group.rows.map((exception) => {
-                          const menuId = `exception-menu-${exception.id}`;
                           const canRetry = Boolean(
                             exception.orderId && group.retryable,
                           );
@@ -509,6 +508,15 @@ export default function Exceptions() {
                                     {reasonOf(exception.message)}
                                   </s-text>
                                   {/*
+                                   * Where it happened is navigation, so it is a
+                                   * link with the subject, not a row action.
+                                   */}
+                                  {exception.syncHref ? (
+                                    <s-link href={exception.syncHref}>
+                                      Open sync
+                                    </s-link>
+                                  ) : null}
+                                  {/*
                                    * What has already been tried: without it, a
                                    * row retried four times looks like one
                                    * nobody has touched.
@@ -532,11 +540,48 @@ export default function Exceptions() {
                               </s-table-cell>
 
                               <s-table-cell>
-                                <s-stack
-                                  direction="inline"
+                                {/*
+                                 * Every action in view, on one line: a menu
+                                 * hid one or two short actions behind a third
+                                 * button and opened over the row below. A grid
+                                 * rather than an inline stack, because a stack
+                                 * wraps the buttons under each other in a
+                                 * narrow column. Resolve, the usual outcome,
+                                 * sits at the trailing edge.
+                                 */}
+                                <s-grid
+                                  gridTemplateColumns={
+                                    canRetry ? "auto auto auto" : "auto auto"
+                                  }
                                   gap="small-300"
                                   justifyContent="end"
                                 >
+                                  {canRetry ? (
+                                    <s-button
+                                      onClick={() =>
+                                        post({
+                                          intent: "retry",
+                                          orderId: exception.orderId ?? "",
+                                          id: exception.id,
+                                          kind: exception.kind,
+                                        })
+                                      }
+                                      {...(busy ? { disabled: true } : {})}
+                                    >
+                                      Retry
+                                    </s-button>
+                                  ) : null}
+                                  <s-button
+                                    onClick={() =>
+                                      post({
+                                        intent: "ignore",
+                                        id: exception.id,
+                                      })
+                                    }
+                                    {...(busy ? { disabled: true } : {})}
+                                  >
+                                    Ignore
+                                  </s-button>
                                   <s-button
                                     onClick={() =>
                                       post({
@@ -548,48 +593,7 @@ export default function Exceptions() {
                                   >
                                     Resolve
                                   </s-button>
-                                  <s-button
-                                    icon="menu-horizontal"
-                                    accessibilityLabel="More actions"
-                                    command="--toggle"
-                                    commandFor={menuId}
-                                    {...(busy ? { disabled: true } : {})}
-                                  />
-                                  <s-menu
-                                    id={menuId}
-                                    accessibilityLabel="More actions"
-                                  >
-                                    {exception.syncHref ? (
-                                      <s-button href={exception.syncHref}>
-                                        Open sync
-                                      </s-button>
-                                    ) : null}
-                                    {canRetry ? (
-                                      <s-button
-                                        onClick={() =>
-                                          post({
-                                            intent: "retry",
-                                            orderId: exception.orderId ?? "",
-                                            id: exception.id,
-                                            kind: exception.kind,
-                                          })
-                                        }
-                                      >
-                                        Retry
-                                      </s-button>
-                                    ) : null}
-                                    <s-button
-                                      onClick={() =>
-                                        post({
-                                          intent: "ignore",
-                                          id: exception.id,
-                                        })
-                                      }
-                                    >
-                                      Ignore
-                                    </s-button>
-                                  </s-menu>
-                                </s-stack>
+                                </s-grid>
                               </s-table-cell>
                             </s-table-row>
                           );
