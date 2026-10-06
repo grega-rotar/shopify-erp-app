@@ -292,8 +292,8 @@ npx prisma migrate deploy
 npx vitest run
 ```
 
-`SKIP_DB_TESTS=1` forces the skip, which is what a CI job without a database
-should set.
+`SKIP_DB_TESTS=1` forces the skip. CI does not set it: the `check` job has its
+own PostgreSQL service and runs `tests/db/` against freshly applied migrations.
 
 Each database test file creates its own shop with a random domain and deletes it
 afterwards; every table is tenant-scoped with `ON DELETE CASCADE`, so it cannot
@@ -308,27 +308,41 @@ has no `build:` for that reason; `APP_IMAGE` in `.env` overrides the tag.
 
 ### Continuous deployment
 
-`.github/workflows/deploy.yml` (workflow `ci`) has two jobs.
+`.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `deploy` →
+`verify`.
 
 `check` runs on every pull request and every push to `main`: `npm ci`,
-`npm run typecheck`, `npm run lint`, and `npm test` with `SKIP_DB_TESTS=1`, so
-`tests/db/` is skipped (there is no database in CI). A newer push to a pull
-request cancels its running check.
+`npm run typecheck`, `npm run lint`, `npx prisma migrate deploy` against a
+throwaway PostgreSQL service, `npm test` (including `tests/db/`), and
+`npm run build`. A newer push to a pull request cancels its running check.
+Runs on `main` are queued rather than cancelled, so pushes are checked and
+deployed strictly in order and an older commit never lands over a newer one.
 
 `deploy` runs only on a push to `main`, only after `check` passes, and one at a
-time (concurrency group `deploy-prod`). It builds the image on GitHub Actions,
-pushes it tagged with the full commit SHA and `latest`, then SSHes to the VM as
-the `deploy` user and, in `/data/stack/apps/recharge-hub`:
+time (concurrency group `deploy-prod`). It builds the image on GitHub Actions
+with the commit SHA baked in as `APP_VERSION` (and the
+`org.opencontainers.image.revision` label), pushes it tagged with the full
+commit SHA and `latest`, then SSHes to the VM as the `deploy` user and, in
+`/data/stack/apps/recharge-hub`:
 
 1. records the image the running `web` container uses;
-2. runs `docker compose pull migrate web worker` and `docker compose up -d
-   --remove-orphans` with `APP_IMAGE` exported to the new SHA (the shell
-   variable wins over `.env`);
-3. waits up to 60 seconds for `http://127.0.0.1:3192/healthz` to answer 200.
+2. runs `docker compose pull migrate web worker` (up to three attempts) and
+   `docker compose up -d --remove-orphans` with `APP_IMAGE` exported to the
+   new SHA (the shell variable wins over `.env`);
+3. waits up to 60 seconds for `http://127.0.0.1:3192/healthz` to answer 200;
+4. checks that `web` reports `APP_VERSION` equal to the commit SHA and that
+   `worker` is running on the same image.
 
-If the migration or the health check fails, it prints the `migrate` and `web`
-logs and rolls `web` and `worker` back to the recorded image with
-`docker compose up -d --no-deps web worker`, then fails the run either way.
+If the migration, the health check, or the commit check fails, it prints the
+`migrate` and `web` logs and rolls `web` and `worker` back to the recorded image
+with `docker compose up -d --no-deps web worker`, then fails the run either way.
+The SSH session is capped at 15 minutes and each job has a timeout.
+
+`verify` then requests `/healthz` on the public URL (through DNS, TLS and the
+host nginx) with retries for up to about a minute. The URL defaults to
+`https://recharge-hub.time-4-action.com`; set the `PRODUCTION_URL` repository
+variable to change it. `/healthz` deliberately reports no version, so the
+commit is checked on the server in step 4, not here.
 Rollback does not undo a migration that was applied: a deploy whose migration
 succeeded but whose code is broken goes back to old code on the new schema, so
 keep migrations additive (expand first, remove columns in a later release).
@@ -353,9 +367,14 @@ Secrets, on the `Recharge` GitHub environment (the `deploy` job declares
 The `deploy` user must be in the `docker` group, be able to read the checkout,
 and have `curl` available.
 
+Dependabot (`.github/dependabot.yml`) opens at most one grouped pull request a
+month each for npm minor/patch updates and for GitHub Actions; they pass through
+`check` like any other pull request.
+
 ### Build and push (workstation)
 
-Still works for a manual or off-`main` build.
+Still works for a manual or off-`main` build. `scripts\build.bat` bakes the
+current `HEAD` into `APP_VERSION` as CI does.
 
 ```bat
 docker login

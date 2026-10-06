@@ -9,6 +9,8 @@ call "%~dp0_image.bat" %* || exit /b !errorlevel!
 set "ARGS="
 for %%t in (%TAGS%) do set "ARGS=!ARGS! -t %IMAGE%:%%t"
 
+for /f %%h in ('git rev-parse HEAD') do set "ARGS=!ARGS! --build-arg GIT_SHA=%%h"
+
 echo Building %IMAGE% with tags:%TAGS%
 docker build!ARGS! "%~dp0.." || exit /b !errorlevel!
 echo Built:%TAGS%

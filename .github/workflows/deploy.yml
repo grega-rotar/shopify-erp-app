@@ -1,17 +1,22 @@
+# check -> deploy -> verify.
+#
 # Checks every pull request and every push to main. On main, a green check
 # builds the image, pushes it to Docker Hub tagged with the commit SHA and
 # `latest`, and rolls the production stack onto that exact SHA over SSH, rolling
-# back to the previous image if it does not come up healthy. The VM only pulls;
-# see docs/development.md "Continuous deployment".
+# back to the previous image if it does not come up healthy on that commit.
+# `verify` then checks the public URL through nginx. The VM only pulls; see
+# docs/development.md "Continuous deployment".
 name: ci
 on:
   push:
     branches: [main]
   pull_request:
 
-# A newer push to the same pull request supersedes the running check.
-# Concurrency groups are repository-wide, so the workflow name keeps this one
-# from colliding with a group in any other workflow.
+# A newer push to the same pull request supersedes the running check. On main
+# runs are never cancelled, only queued: one push is checked and deployed
+# before the next starts, so an older commit can never be deployed over a newer
+# one. Concurrency groups are repository-wide, so the workflow name keeps this
+# one from colliding with a group in any other workflow.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,10 +26,32 @@ permissions:
 
 env:
   IMAGE: time4action/recharge-hub
+  # Overridable with the PRODUCTION_URL repository variable.
+  PRODUCTION_URL: ${{ vars.PRODUCTION_URL || 'https://recharge-hub.time-4-action.com' }}
 
 jobs:
   check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # A throwaway database, so tests/db/ runs against migrations exactly as
+    # production applies them instead of skipping itself.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+      TEST_DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
     steps:
       - uses: actions/checkout@v4
 
@@ -36,10 +63,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run lint
-      # No database here; tests/db/ skips itself.
+      - run: npx prisma migrate deploy
       - run: npm test
-        env:
-          SKIP_DB_TESTS: "1"
+      # The same build the Dockerfile runs, so a broken build fails the pull
+      # request rather than the deploy.
+      - run: npm run build
 
   deploy:
     needs: check
@@ -47,7 +75,10 @@ jobs:
     runs-on: ubuntu-24.04
     # The Docker Hub and SSH secrets are environment secrets on "Recharge".
     environment: Recharge
-    concurrency: deploy-prod
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +93,9 @@ jobs:
         with:
           push: true
           platforms: linux/amd64
+          # Baked in as APP_VERSION, which the server checks after rollout.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
@@ -74,10 +108,13 @@ jobs:
           username: deploy
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
+          timeout: 30s
+          command_timeout: 15m
           script: |
             set -u
             cd /data/stack/apps/recharge-hub || exit 1
-            NEW=time4action/recharge-hub:${{ github.sha }}
+            SHA=${{ github.sha }}
+            NEW=time4action/recharge-hub:$SHA
 
             # The image web runs now is what a failed deploy goes back to.
             PREV=""
@@ -95,11 +132,28 @@ jobs:
               return 1
             }
 
-            export APP_IMAGE=$NEW
-            # A failed pull changes nothing on the server.
-            docker compose pull migrate web worker || exit 1
+            # Healthy is not enough: web and worker must both be running the
+            # image built from this commit, not a container left over.
+            on_commit() {
+              WEB_SHA=$(docker compose exec -T web printenv APP_VERSION 2>/dev/null || true)
+              echo "web reports APP_VERSION=${WEB_SHA:-none}"
+              [ "$WEB_SHA" = "$SHA" ] || return 1
+              WORKER_ID=$(docker compose ps -q --status running worker 2>/dev/null || true)
+              [ -n "$WORKER_ID" ] || { echo "worker is not running"; return 1; }
+              WORKER_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$WORKER_ID")
+              [ "$WORKER_IMAGE" = "$NEW" ] || { echo "worker is on $WORKER_IMAGE"; return 1; }
+            }
 
-            if docker compose up -d --remove-orphans && healthy; then
+            export APP_IMAGE=$NEW
+            # A failed pull changes nothing on the server. Retried, because
+            # Docker Hub has transient failures.
+            for i in 1 2 3; do
+              docker compose pull migrate web worker && break
+              [ "$i" = 3 ] && exit 1
+              echo "pull failed, retrying"; sleep 10
+            done
+
+            if docker compose up -d --remove-orphans && healthy && on_commit; then
               echo "healthy on $NEW"
               exit 0
             fi
@@ -123,3 +177,15 @@ jobs:
               docker compose logs --tail=50 web
             fi
             exit 1
+
+  # From outside: DNS, TLS and the host nginx in front of the container the
+  # deploy job already checked on loopback.
+  verify:
+    needs: deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Public health check
+        run: |
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
+            "$PRODUCTION_URL/healthz"

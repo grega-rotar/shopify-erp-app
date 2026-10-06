@@ -30,6 +30,12 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/build ./build
 COPY --from=build /app/public ./public
 
+# The commit this image was built from. Last, so a new SHA does not bust the
+# cached layers above. The deploy checks it inside the running container.
+ARG GIT_SHA=unknown
+ENV APP_VERSION=$GIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 EXPOSE 3000
 
 # Overridden per service in docker-compose.yml.
