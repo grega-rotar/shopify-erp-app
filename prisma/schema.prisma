@@ -141,9 +141,13 @@ model Shop {
   saleRuns                SaleRun[]
   catalogProducts         CatalogProduct[]
   catalogVariants         CatalogVariant[]
+  catalogProductDeletions CatalogProductDeletion[]
   catalogPriceLists       CatalogPriceList[]
   attributeSchema         AttributeSchema?
   productTypeAssignments  ProductTypeAssignment[]
+  productTypeMenu         ProductTypeMenu?
+  productAutofills        ProductAutofill[]
+  sourceAutofills         SourceAutofill[]
   translationLanguages    TranslationLanguage[]
   translationCoverages    TranslationCoverage[]
   translationGlossary     TranslationGlossaryTerm[]
@@ -2246,6 +2250,23 @@ model CatalogVariant {
   @@map("catalog_variant")
 }
 
+/// A product Shopify said was deleted (`products/delete`). Webhooks and jobs
+/// arrive out of order, so a `products/update` handled after the delete — or
+/// a bulk read started before it — would otherwise put the product back into
+/// the snapshot. Shopify never reuses a product id, so the row only has to
+/// outlive anything still in flight; each snapshot prunes old ones.
+model CatalogProductDeletion {
+  id               String   @id @default(cuid())
+  shopId           String   @map("shop_id")
+  shopifyProductId String   @map("shopify_product_id")
+  deletedAt        DateTime @default(now()) @map("deleted_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyProductId])
+  @@map("catalog_product_deletion")
+}
+
 /// A Markets price list, as far as a sale needs to know about it: whether it
 /// holds fixed prices that will not follow the base price.
 model CatalogPriceList {
@@ -2315,6 +2336,102 @@ model ProductTypeAssignment {
   @@unique([shopId, productId])
   @@index([shopId, typeId])
   @@map("product_type_assignment")
+}
+
+/// Whether a source's new products are put to AI autofill as they arrive
+/// (docs/sources.md § AI categorization per source). The source is the
+/// export portal's; this app keeps only what to do with its products here,
+/// keyed by the portal's source id. No row is off.
+model SourceAutofill {
+  id       String @id @default(cuid())
+  shopId   String @map("shop_id")
+  /// The export portal's source id (`sc_…`).
+  sourceId String @map("source_id")
+
+  enabled        Boolean @default(false)
+  /// Also suggest the type's attribute values, not only the type.
+  fillAttributes Boolean @default(true) @map("fill_attributes")
+  updatedBy      String? @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, sourceId])
+  @@map("source_autofill")
+}
+
+/// What AI autofill suggested for one product (docs/attributes.md § AI
+/// autofill): a product type and values for the type's empty attributes,
+/// held for a person to apply or discard. Nothing reaches Shopify or
+/// `product_type_assignment` until it is applied. One row per shop and
+/// product; asking again replaces it.
+model ProductAutofill {
+  id        String @id @default(cuid())
+  shopId    String @map("shop_id")
+  /// Shopify product GID.
+  productId String @map("product_id")
+
+  /// `queued`, `running`, `ready`, `applied`, `discarded` or `failed`.
+  status         String
+  /// The suggested type, or the type a person had already chosen.
+  typeId         String?  @map("type_id")
+  /// `suggested` (the categorizer chose it) or `kept` (a person's choice).
+  typeOrigin     String?  @map("type_origin")
+  typeConfidence Float?   @map("type_confidence")
+  typeReason     String?  @map("type_reason")
+  /// `[{ key, attributeId, variantId, name, input, display }]`.
+  values         Json     @default("[]")
+  /// Who suggested it: `export-portal`.
+  engine         String?
+  error          String?
+  requestedBy    String?  @map("requested_by")
+  decidedBy      String?  @map("decided_by")
+  requestedAt    DateTime @default(now()) @map("requested_at")
+  decidedAt      DateTime? @map("decided_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, productId])
+  @@index([shopId, status])
+  @@map("product_autofill")
+}
+
+/// The store menu made from the product type tree (docs/attributes.md
+/// § Store menu): what this app created in Shopify for it, so the next run
+/// updates rather than duplicates, and the state of the latest run.
+model ProductTypeMenu {
+  id     String @id @default(cuid())
+  shopId String @unique @map("shop_id")
+
+  /// The product metafield definition the collections match on.
+  definitionId String? @map("definition_id")
+  /// Shopify menu GID.
+  menuId       String? @map("menu_id")
+  /// `{ [typeId]: { collectionId, sourceId } }`.
+  collections  Json    @default("{}")
+
+  /// `running`, `done` or `failed`.
+  status      String
+  /// What the run is doing: `products`, `collections`, `menu`.
+  phase       String?
+  total       Int       @default(0)
+  done        Int       @default(0)
+  lastError   String?   @map("last_error")
+  requestedBy String?   @map("requested_by")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@map("product_type_menu")
 }
 
 // ---------------------------------------------------------------------------

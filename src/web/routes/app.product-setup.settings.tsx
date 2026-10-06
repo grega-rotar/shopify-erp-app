@@ -1,5 +1,5 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   useFetcher,
   useLoaderData,
@@ -10,6 +10,7 @@ import {
 
 import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
+import { schemaFromCsv } from "~/domain/attributes/csv";
 import { workspaceState } from "~/domain/attributes/impact";
 import { clearRule } from "~/domain/attributes/mutations";
 import { pathOf } from "~/domain/attributes/resolve";
@@ -18,10 +19,13 @@ import { starterSchema } from "~/domain/attributes/starter";
 import { emptySchema } from "~/domain/attributes/types";
 import { ConfirmModal } from "~/web/components/confirm-modal";
 import { DownloadButton } from "~/web/components/download-button";
+import { LearnMore } from "~/web/components/learn-more";
 import { ProductSetupNav } from "~/web/components/product-setup-nav";
+import { attributeAiPrompt } from "~/web/lib/attribute-ai-prompt";
 import { PRODUCT_SETUP_ROUTES, countOf } from "~/web/lib/attributes";
 import {
   commitSchemaChange,
+  newId,
   revisionFrom,
   type SchemaActionResult,
 } from "~/web/lib/attributes.server";
@@ -33,7 +37,8 @@ import {
 
 /**
  * Product setup settings (docs/attributes.md § Screens): the schema as a
- * file, the checks, the exceptions single types have made, and starting
+ * file (JSON, or CSV for a spreadsheet or an AI assistant, with the prompt
+ * that explains the CSV to one), the checks, the exceptions single types have made, and starting
  * again. Everything a person needs rarely, one link from the work.
  */
 const IMPORT_MODAL_ID = "import-schema";
@@ -94,9 +99,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
+/** A refused CSV says every row that is wrong, not only the first. */
+type SettingsActionResult =
+  SchemaActionResult | { ok: false; message: string; problems: string[] };
+
 export const action = async ({
   request,
-}: ActionFunctionArgs): Promise<SchemaActionResult> => {
+}: ActionFunctionArgs): Promise<SettingsActionResult> => {
   const { session } = await authenticate.admin(request);
   const principal = principalFromSession(session);
   const actor = actorFromSession(session);
@@ -117,6 +126,21 @@ export const action = async ({
           ok: false,
           message: "A schema file must be smaller than 5 MB.",
         };
+      if (field("format") === "csv") {
+        const imported = schemaFromCsv(text, newId);
+        if (!imported.ok)
+          return {
+            ok: false,
+            message:
+              "Import rejected, nothing changed. Fix these rows and import the file again.",
+            problems: imported.problems,
+          };
+        return commit("attribute_schema.imported", () => ({
+          ok: true,
+          schema: imported.schema,
+          message: `Imported ${countOf(imported.schema.types.length, "product type")} and ${countOf(imported.schema.attributes.length, "attribute")}.`,
+        }));
+      }
       let raw: unknown;
       try {
         raw = JSON.parse(text);
@@ -124,7 +148,7 @@ export const action = async ({
         return {
           ok: false,
           message:
-            "The file is not JSON. Export a schema from this page or from the standalone builder and import that.",
+            "The file is neither CSV nor JSON. Export a file from this page and import that, or a file from the standalone builder.",
         };
       }
       const parsed = parseAttributeSchema(raw);
@@ -185,8 +209,10 @@ export default function ProductSetupSettings() {
   const [pendingImport, setPendingImport] = useState<{
     name: string;
     text: string;
+    format: "csv" | "json";
   } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [promptNote, setPromptNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!result?.ok) return;
@@ -206,16 +232,46 @@ export default function ProductSetupSettings() {
       setImportError("A schema file must be smaller than 5 MB.");
       return;
     }
-    setPendingImport({ name: file.name, text: await file.text() });
+    const text = await file.text();
+    const json =
+      /\.json$/i.test(file.name) ||
+      (!/\.csv$/i.test(file.name) && /^\s*[{[]/.test(text));
+    setPendingImport({ name: file.name, text, format: json ? "json" : "csv" });
     (
       document.getElementById(IMPORT_MODAL_ID) as Overlay | null
     )?.showOverlay?.();
   };
 
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(attributeAiPrompt());
+      setPromptNote(null);
+      if (typeof shopify !== "undefined") shopify.toast.show("Prompt copied");
+    } catch {
+      setPromptNote(
+        "The browser did not allow copying here. Download the prompt instead.",
+      );
+    }
+  };
+
+  const downloadPrompt = () => {
+    const blob = new Blob([attributeAiPrompt()], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "product-setup-ai-prompt.txt";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const stated = `${countOf(counts.types, "product type")} and ${countOf(counts.attributes, "attribute")}`;
 
   return (
-    <s-page heading="Metafields">
+    <s-page heading="Metafields" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
@@ -234,7 +290,11 @@ export default function ProductSetupSettings() {
           commandFor={IMPORT_MODAL_ID}
           onClick={() => {
             if (pendingImport)
-              submit({ intent: "import", file: pendingImport.text });
+              submit({
+                intent: "import",
+                format: pendingImport.format,
+                file: pendingImport.text,
+              });
             setPendingImport(null);
           }}
         >
@@ -272,104 +332,175 @@ export default function ProductSetupSettings() {
         </s-paragraph>
       </ConfirmModal>
 
-      <s-stack direction="block" gap="base">
-        <ProductSetupNav current="settings" />
+      <s-query-container>
+        <s-stack direction="block" gap="base">
+          <ProductSetupNav current="settings" />
 
-        {result && !result.ok ? (
-          <s-banner tone="critical" heading="That did not work">
-            <s-paragraph>{result.message}</s-paragraph>
-          </s-banner>
-        ) : null}
-
-        <s-section heading="Checks">
-          <s-stack direction="block" gap="small-300">
-            {stage === "ok" ? (
-              <s-text color="subdued">
-                {`${stated} pass every check: each product type has attributes, each attribute is used and has a Shopify field, and every choice has options.`}
-              </s-text>
-            ) : (
-              <s-text color="subdued">{summary}</s-text>
-            )}
-            {problems.map((problem) => (
-              <s-stack
-                key={problem.id}
-                direction="inline"
-                gap="small-300"
-                alignItems="center"
-              >
-                <s-icon type="alert-circle" tone="warning" />
-                <s-text>{problem.message}</s-text>
-                {problem.href !== PRODUCT_SETUP_ROUTES.settings ? (
-                  <s-link href={problem.href}>Review</s-link>
+          {result && !result.ok ? (
+            <s-banner tone="critical" heading="That did not work">
+              <s-stack direction="block" gap="small-300">
+                <s-paragraph>{result.message}</s-paragraph>
+                {"problems" in result ? (
+                  <s-unordered-list>
+                    {result.problems.map((problem) => (
+                      <s-list-item key={problem}>{problem}</s-list-item>
+                    ))}
+                  </s-unordered-list>
                 ) : null}
               </s-stack>
-            ))}
-          </s-stack>
-        </s-section>
+            </s-banner>
+          ) : null}
 
-        <s-section heading="Import and export">
-          <s-stack direction="block" gap="base">
-            <s-text color="subdued">
-              {updatedAt
-                ? `The whole plan as one file. Last changed ${formatDateTime(updatedAt)}.`
-                : "The whole plan as one file. Nothing has been saved yet."}
-            </s-text>
-            <s-stack direction="inline" gap="small-300">
-              <DownloadButton
-                href={PRODUCT_SETUP_ROUTES.export}
-                fallbackName="product-setup.json"
-                icon="export"
-                disabled={empty}
-              >
-                Export JSON
-              </DownloadButton>
-              <s-button
-                onClick={() => fileInput.current?.click()}
-                {...(busy ? { disabled: true } : {})}
-              >
-                Import JSON
-              </s-button>
-              <input
-                ref={fileInput}
-                type="file"
-                accept=".json,application/json"
-                hidden
-                onChange={(event) => {
-                  void chooseFile(event.currentTarget.files?.[0]);
-                  event.currentTarget.value = "";
-                }}
+          <s-section>
+            <s-stack direction="block" gap="small-300">
+              <CardHeader
+                title="Checks"
+                subtitle={
+                  stage === "ok" ? `${stated} pass every check.` : summary
+                }
               />
+              {problems.map((problem) => (
+                <s-grid
+                  key={problem.id}
+                  gridTemplateColumns="auto 1fr auto"
+                  gap="small-300"
+                  alignItems="center"
+                >
+                  <s-icon type="alert-circle" tone="warning" />
+                  <s-text>{problem.message}</s-text>
+                  {problem.href !== PRODUCT_SETUP_ROUTES.settings ? (
+                    <s-button href={problem.href}>Review</s-button>
+                  ) : (
+                    <span />
+                  )}
+                </s-grid>
+              ))}
             </s-stack>
-            {importError ? (
-              <s-text tone="critical">{importError}</s-text>
-            ) : null}
-            <s-text color="subdued">
-              A file exported here or from the standalone builder. It is checked
-              whole before it replaces anything.
-            </s-text>
-          </s-stack>
-        </s-section>
+          </s-section>
 
-        <s-section heading="Exceptions on single product types">
-          <s-stack direction="block" gap="base">
-            <s-text color="subdued">
-              A requirement changed or an attribute removed on one exact type.
-              These pass to no descendant; resetting one returns the type to
-              what it inherits.
-            </s-text>
-            {rules.length === 0 ? (
-              <s-text color="subdued">
-                None. Every type takes what it inherits.
-              </s-text>
-            ) : (
-              rules.map((rule) => (
+          <s-section>
+            <s-stack direction="block" gap="base">
+              <CardHeader
+                title="Import and export"
+                subtitle={
+                  updatedAt
+                    ? `The whole plan as one file. Last changed ${formatDateTime(updatedAt)}.`
+                    : "The whole plan as one file. Nothing has been saved yet."
+                }
+              >
+                <DownloadButton
+                  href={PRODUCT_SETUP_ROUTES.exportCsv}
+                  fallbackName="product-setup.csv"
+                  icon="export"
+                >
+                  Export CSV
+                </DownloadButton>
+                <DownloadButton
+                  href={PRODUCT_SETUP_ROUTES.export}
+                  fallbackName="product-setup.json"
+                  icon="export"
+                  disabled={empty}
+                >
+                  Export JSON
+                </DownloadButton>
+                <s-button
+                  icon="import"
+                  onClick={() => fileInput.current?.click()}
+                  {...(busy ? { disabled: true } : {})}
+                >
+                  Import
+                </s-button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept=".csv,text/csv,.json,application/json"
+                  hidden
+                  onChange={(event) => {
+                    void chooseFile(event.currentTarget.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </CardHeader>
+              {importError ? (
+                <s-text tone="critical">{importError}</s-text>
+              ) : null}
+              <LearnMore label="About the files">
+                <s-paragraph>
+                  CSV opens in a spreadsheet and is what an AI assistant edits;
+                  with nothing planned it downloads as an empty template. JSON
+                  is the exact backup. Either replaces the whole plan, and is
+                  checked whole first: a refused file lists every wrong row and
+                  changes nothing.
+                </s-paragraph>
+                <s-paragraph>
+                  In the CSV, the record column says what a row is: type, set,
+                  attribute, option, attach, requirement or remove. Types are
+                  named by their full path (All products &gt; Windsurf &gt;
+                  Sails), sets and attributes by name.
+                </s-paragraph>
+              </LearnMore>
+            </s-stack>
+          </s-section>
+
+          <s-section>
+            <s-stack direction="block" gap="base">
+              <CardHeader
+                title="Plan with an AI assistant"
+                subtitle="Give Claude the prompt and your exported CSV, then import the CSV it returns."
+              >
+                <s-button icon="clipboard" onClick={() => void copyPrompt()}>
+                  Copy prompt
+                </s-button>
+                <s-button icon="download" onClick={downloadPrompt}>
+                  Download prompt
+                </s-button>
+              </CardHeader>
+              {promptNote ? (
+                <s-text tone="critical">{promptNote}</s-text>
+              ) : null}
+              <LearnMore label="Step by step">
+                <s-ordered-list>
+                  <s-list-item>
+                    Export CSV to hand over your current plan.
+                  </s-list-item>
+                  <s-list-item>
+                    Paste the prompt into Claude, attach the CSV and describe
+                    your products: a product list, supplier sheets or web pages.
+                  </s-list-item>
+                  <s-list-item>
+                    Ask for changes until the plan is right, then save the CSV
+                    it returns.
+                  </s-list-item>
+                  <s-list-item>
+                    Import it. The checks above say what is still missing.
+                  </s-list-item>
+                </s-ordered-list>
+                <s-paragraph>
+                  This app sends nothing to an AI. An import replaces the whole
+                  plan, so the prompt asks for all of it back.
+                </s-paragraph>
+              </LearnMore>
+            </s-stack>
+          </s-section>
+
+          <s-section>
+            <s-stack direction="block" gap="small-300">
+              <CardHeader
+                title="Exceptions on single product types"
+                subtitle={
+                  rules.length === 0
+                    ? "None. Every type takes what it inherits."
+                    : "A requirement changed or an attribute removed on one type only. Reset returns the type to what it inherits."
+                }
+              />
+              {rules.map((rule) => (
                 <s-grid
                   key={`${rule.kind}-${rule.id}`}
                   gridTemplateColumns="1fr auto"
                   gap="small-300"
                   alignItems="center"
                 >
-                  <s-stack direction="block" gap="small-500">
+                  <s-stack direction="block" gap="none">
                     <s-text>
                       <s-text type="strong">{rule.attribute}</s-text>
                       {` · ${rule.what}`}
@@ -379,7 +510,6 @@ export default function ProductSetupSettings() {
                     </s-link>
                   </s-stack>
                   <s-button
-                    variant="tertiary"
                     accessibilityLabel={`Reset ${rule.attribute} on ${rule.type}`}
                     onClick={() =>
                       submit({
@@ -393,24 +523,21 @@ export default function ProductSetupSettings() {
                     Reset
                   </s-button>
                 </s-grid>
-              ))
-            )}
-          </s-stack>
-        </s-section>
+              ))}
+            </s-stack>
+          </s-section>
 
-        <s-section heading="Start again">
-          <s-stack direction="block" gap="base">
-            <s-text color="subdued">
-              Either replaces the whole plan. Nothing in Shopify changes; this
-              workspace does not write to Shopify.
-            </s-text>
-            <s-stack direction="inline" gap="small-300">
+          <s-section>
+            <CardHeader
+              title="Start again"
+              subtitle="Replaces the whole plan. Nothing in Shopify changes."
+            >
               <s-button
                 command="--show"
                 commandFor={STARTER_MODAL_ID}
                 {...(busy ? { disabled: true } : {})}
               >
-                Replace with the example
+                Load the example
               </s-button>
               <s-button
                 tone="critical"
@@ -420,11 +547,43 @@ export default function ProductSetupSettings() {
               >
                 Remove everything
               </s-button>
-            </s-stack>
-          </s-stack>
-        </s-section>
-      </s-stack>
+            </CardHeader>
+          </s-section>
+        </s-stack>
+      </s-query-container>
     </s-page>
+  );
+}
+
+/**
+ * A card's title and what it is, with its actions at the trailing edge:
+ * one line per card, so the page reads as a list of settings.
+ */
+function CardHeader({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children?: ReactNode;
+}) {
+  return (
+    <s-grid
+      gridTemplateColumns="@container (inline-size <= 640px) 1fr, 1fr auto"
+      gap="base"
+      alignItems="center"
+    >
+      <s-stack direction="block" gap="small-500">
+        <s-heading>{title}</s-heading>
+        <s-text color="subdued">{subtitle}</s-text>
+      </s-stack>
+      {children ? (
+        <s-stack direction="inline" gap="small-300">
+          {children}
+        </s-stack>
+      ) : null}
+    </s-grid>
   );
 }
 

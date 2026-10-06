@@ -44,6 +44,10 @@ export const QUEUES = {
   translationResourceEvent: "translation-resource-event",
   translationProfile: "translation-profile",
   translationRemove: "translation-remove",
+  // Product setup (docs/attributes.md § Store menu).
+  typeMenuSync: "type-menu-sync",
+  productAutofill: "product-autofill",
+  sourceProductAutofill: "source-product-autofill",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -93,6 +97,11 @@ export function translationCoverageKey(shopDomain: string): string {
 }
 
 /** One removal of a language's translations at a time, per shop and language. */
+/** One store menu run waiting per shop; two presses make one menu. */
+export function typeMenuKey(shopDomain: string): string {
+  return `type-menu:${shopDomain}`;
+}
+
 export function translationRemoveKey(shopDomain: string, locale: string): string {
   return `translation-remove:${shopDomain}:${locale}`;
 }
@@ -463,6 +472,36 @@ export const QUEUE_DEFINITIONS: Record<QueueName, QueueOptions> = {
     retryDelay: 60,
     retryBackoff: true,
     expireInSeconds: 1800,
+  },
+  // A merchant pressed Make menu: every product whose type changed, one
+  // collection per type, then the menu. Every step finds what an earlier
+  // attempt made, so a retry duplicates nothing; a refusal Shopify explains
+  // is recorded for the merchant and not retried.
+  [QUEUES.typeMenuSync]: {
+    policy: "short",
+    deadLetter: DEAD_LETTER,
+    retryLimit: 2,
+    retryDelay: 60,
+    retryBackoff: true,
+    expireInSeconds: 1800,
+  },
+  // A person asked for AI suggestions on some products: ten per pass, the
+  // rest handed to a fresh job. Every outcome lands on the product's row,
+  // so the job itself is not retried; a person presses again.
+  [QUEUES.productAutofill]: {
+    retryLimit: 0,
+    expireInSeconds: 1800,
+    retentionSeconds: 60 * 60 * 24,
+  },
+  // products/create for a source with AI categorization on: a lookup and,
+  // at most, one queued autofill. Guarded by webhook id, so it may retry.
+  [QUEUES.sourceProductAutofill]: {
+    policy: "short",
+    deadLetter: DEAD_LETTER,
+    retryLimit: 3,
+    retryDelay: 30,
+    retryBackoff: true,
+    expireInSeconds: 300,
   },
   // A retention promise, so it retries like the other compliance work rather
   // than being dropped after a couple of attempts.

@@ -928,7 +928,7 @@ export default function ProductTypes() {
   ];
 
   return (
-    <s-page heading="Metafields">
+    <s-page heading="Metafields" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>

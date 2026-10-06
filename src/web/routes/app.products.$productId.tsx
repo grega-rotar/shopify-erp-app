@@ -11,6 +11,13 @@ import {
 } from "react-router";
 
 import { isConfigured } from "~/adapters/ai/openai.server";
+import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
+import {
+  getAutofill,
+  readyAutofillProductIds,
+} from "~/adapters/db/repositories/product-autofill.server";
+import { assignableTypes } from "~/domain/products/attribute-values";
+import { autofillAvailability } from "~/adapters/products/autofill.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
 import {
   sameInput,
@@ -28,12 +35,15 @@ import {
 } from "~/domain/products/workspace";
 import { ConfirmModal } from "~/web/components/confirm-modal";
 import { ProductAttributes } from "~/web/components/product-attributes";
+import { ProductAutofill } from "~/web/components/product-autofill";
 import { ProductDetails } from "~/web/components/product-details";
 import { ProductInventory } from "~/web/components/product-inventory";
 import { ProductOverview } from "~/web/components/product-overview";
 import { ProductTranslations } from "~/web/components/product-translations";
 import { ProductVariants } from "~/web/components/product-variants";
 import { formatDateTime } from "~/web/lib/datetime";
+import { isAutofillWorking } from "~/web/lib/autofill";
+import { autofillView } from "~/web/lib/autofill.server";
 import { useLiveRevalidation } from "~/web/lib/live";
 import {
   actorFromSession,
@@ -43,6 +53,7 @@ import {
   STATUS_LABEL,
   WORKSPACE_TABS,
   isWorkspaceTab,
+  productPath,
 } from "~/web/lib/product-workspace";
 import {
   handleProductAction,
@@ -77,9 +88,34 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   );
   if (!workspace) throw new Response("Not found", { status: 404 });
   const list = new URL(request.url).searchParams.get("list") ?? "";
+  const productId = productGid(String(params.productId ?? ""));
+  const [{ schema }, autofill, autofillReady] = await Promise.all([
+    getAttributeSchema(principal),
+    getAutofill(principal, productId),
+    autofillAvailability(principal),
+  ]);
+  // The review queue: the next product whose suggestion waits, so a person
+  // can work through them one after another (docs/attributes.md § AI autofill).
+  const waiting = await readyAutofillProductIds(principal);
+  const nextId =
+    waiting.find(
+      (id, index) => index > waiting.indexOf(productId) && id !== productId,
+    ) ??
+    waiting.find((id) => id !== productId) ??
+    null;
   return {
     workspace,
     aiConfigured: isConfigured(),
+    autofill: autofillView(schema, autofill),
+    autofillTypes: assignableTypes(schema).map((type) => ({
+      value: type.id,
+      label: type.path.join(" › "),
+    })),
+    nextReview: nextId ? productPath(nextId, "attributes") : null,
+    reviewWaiting: waiting.length,
+    autofillAvailable: autofillReady.ok
+      ? { ok: true as const }
+      : { ok: false as const, message: autofillReady.message },
     /** The list's own query, so the way back keeps its search and page. */
     back: list.startsWith("?") ? `/app/products${list}` : "/app/products",
   };
@@ -143,7 +179,16 @@ function variantInputs(
 }
 
 export default function ProductWorkspacePage() {
-  const { workspace, aiConfigured, back } = useLoaderData<typeof loader>();
+  const {
+    workspace,
+    aiConfigured,
+    autofill,
+    autofillAvailable,
+    autofillTypes,
+    nextReview,
+    reviewWaiting,
+    back,
+  } = useLoaderData<typeof loader>();
   const { product } = workspace;
   const [params, setParams] = useSearchParams();
   const rawTab = params.get("tab");
@@ -212,8 +257,12 @@ export default function ProductWorkspacePage() {
   );
   const dirty = productDirty || touchedVariants.length > 0 || attributesDirty;
   useSaveBar(SAVE_BAR_ID, dirty);
-  // Re-read what others change, but never under someone's unsaved edits.
-  useLiveRevalidation({ active: false, idleEveryMs: dirty ? null : 60_000 });
+  // Re-read what others change, but never under someone's unsaved edits;
+  // closely while AI suggestions are being made for this product.
+  useLiveRevalidation({
+    active: !dirty && isAutofillWorking(autofill),
+    idleEveryMs: dirty ? null : 60_000,
+  });
 
   const saver = useFetcher<ProductActionResult>();
   const saving = saver.state !== "idle";
@@ -373,6 +422,11 @@ export default function ProductWorkspacePage() {
               .filter(Boolean)
               .join(" · ")}
           </s-text>
+          {autofill?.status === "ready" && tab !== "attributes" ? (
+            <s-link onClick={() => showTab("attributes")}>
+              AI suggestion to review
+            </s-link>
+          ) : null}
           {workspace.issues.length > 0 && tab !== "overview" ? (
             <s-link onClick={() => showTab("overview")}>
               {`${workspace.issues.length} ${workspace.issues.length === 1 ? "thing needs" : "things need"} attention`}
@@ -429,6 +483,20 @@ export default function ProductWorkspacePage() {
             onChange={(patch) =>
               setFields((current) => ({ ...current, ...patch }))
             }
+          />
+        ) : null}
+        {tab === "attributes" ? (
+          <ProductAutofill
+            view={autofill}
+            available={autofillAvailable}
+            variants={workspace.variants}
+            dirty={dirty}
+            types={autofillTypes}
+            currentTypeId={
+              workspace.setup.kind === "matched" ? workspace.setup.typeId : null
+            }
+            nextReview={nextReview}
+            reviewWaiting={reviewWaiting}
           />
         ) : null}
         {tab === "attributes" ? (

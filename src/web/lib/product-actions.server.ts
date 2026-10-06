@@ -4,11 +4,18 @@ import { z } from "zod";
 import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
-  assignType,
   assignedTypeFor,
   clearAssignedType,
 } from "~/adapters/db/repositories/product-type-assignment.server";
 import { liveHolds } from "~/adapters/db/repositories/product-workspace.server";
+import { getLogger } from "~/adapters/observability/logger.server";
+import {
+  applyAutofill,
+  autofillAvailability,
+  discardAutofill,
+  requestAutofill,
+} from "~/adapters/products/autofill.server";
+import { chooseProductType } from "~/adapters/products/type-choice.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
 import {
   readWorkspaceProduct,
@@ -165,7 +172,67 @@ function sameVariant(
   return a[key] === b[key];
 }
 
+/**
+ * The Shopify client throws on a GraphQL-level error rather than returning
+ * it, and an action that throws gives the page no answer at all: the save
+ * bar stays up with nothing said. So whatever is thrown comes back as a
+ * refusal with Shopify's own words, and is logged.
+ */
 export async function handleProductAction(input: {
+  admin: AdminApiContext;
+  principal: Principal;
+  actor: string | null;
+  productId: string;
+  formData: FormData;
+}): Promise<ProductActionResult> {
+  try {
+    return await runProductAction(input);
+  } catch (error) {
+    getLogger().error(
+      { err: error, productId: input.productId },
+      "Product workspace action failed",
+    );
+    return {
+      ok: false,
+      message: `The save stopped: ${thrownMessage(error)} Reload to see what was saved, then try again.`,
+    };
+  }
+}
+
+/** Shopify's GraphQL error messages when there are any, else the error's own. */
+export function thrownMessage(error: unknown): string {
+  const body =
+    error && typeof error === "object" && "body" in error
+      ? (error as { body?: unknown }).body
+      : null;
+  const errors =
+    body && typeof body === "object" && "errors" in body
+      ? (body as { errors?: unknown }).errors
+      : null;
+  const graphQLErrors =
+    errors && typeof errors === "object" && "graphQLErrors" in errors
+      ? (errors as { graphQLErrors?: unknown }).graphQLErrors
+      : null;
+  const messages = Array.isArray(graphQLErrors)
+    ? graphQLErrors.flatMap((entry: unknown) =>
+        entry &&
+        typeof entry === "object" &&
+        "message" in entry &&
+        typeof (entry as { message: unknown }).message === "string"
+          ? [(entry as { message: string }).message]
+          : [],
+      )
+    : [];
+  const text =
+    messages.length > 0
+      ? messages.join("; ")
+      : error instanceof Error
+        ? error.message
+        : "something went wrong";
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+async function runProductAction(input: {
   admin: AdminApiContext;
   principal: Principal;
   actor: string | null;
@@ -174,6 +241,33 @@ export async function handleProductAction(input: {
 }): Promise<ProductActionResult> {
   const { admin, principal, actor, productId, formData } = input;
   const intent = String(formData.get("intent") ?? "");
+
+  // AI autofill (docs/attributes.md § AI autofill): ask, then apply what
+  // a person kept, or discard it.
+  if (intent === "autofill") {
+    const available = await autofillAvailability(principal);
+    if (!available.ok) return { ok: false, message: available.message };
+    const queued = await requestAutofill(principal, [productId], actor);
+    return {
+      ok: true,
+      message:
+        queued > 0
+          ? "Asking for suggestions. They appear here for review."
+          : "Suggestions are already being made for this product.",
+    };
+  }
+  if (intent === "apply-autofill")
+    return applyAutofill(admin, principal, {
+      productId,
+      actor,
+      keepType: formData.get("keepType") === "true",
+      ...(String(formData.get("typeId") ?? "") !== ""
+        ? { typeId: String(formData.get("typeId")) }
+        : {}),
+      keepValues: new Set(formData.getAll("keep").map(String)),
+    });
+  if (intent === "discard-autofill")
+    return discardAutofill(principal, productId, actor);
 
   if (intent === "translate") {
     const locales = String(formData.get("locales") ?? "")
@@ -240,7 +334,12 @@ export async function handleProductAction(input: {
         message:
           "That product type is no longer in the plan. Reload to see the current types.",
       };
-    await assignType(principal, productId, type.id, actor);
+    await chooseProductType(admin, principal, {
+      schema,
+      productId,
+      typeId: type.id,
+      chosenBy: actor,
+    });
     await appendEvent(principal, {
       entityType: "product",
       entityId: productId,

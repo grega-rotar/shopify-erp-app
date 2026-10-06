@@ -35,12 +35,14 @@ Missing directions and product decisions are tracked in
 | `read_merchant_managed_fulfillment_orders` | Which location each line ships from, which is what drives the warehouse split. |
 | `read_products`, `read_inventory` | The SKU registry and stock levels. |
 | `write_inventory` | Writing MetaKocka stock into Shopify for `mk_to_shopify` locations. |
-| `write_products` | Merchant-enabled MetaKocka product-name and product-creation sync (off by default), and sale campaigns writing variant `price` / `compareAtPrice` (`docs/sale-campaigns.md`). |
+| `write_products` | Merchant-enabled MetaKocka product-name and product-creation sync (off by default), and sale campaigns writing variant `price` / `compareAtPrice` (`docs/sale-campaigns.md`). The store menu's product type field (definition and values) and its automated collections (`docs/attributes.md` § Store menu). |
 | `read_discounts` | One warning only: a sale campaign's preview names the automatic discounts Shopify would apply at checkout on top of the catalogue price. Until granted, the preview says "not checked". |
 | `read_locales`, `write_locales` | Listing, adding, publishing, unpublishing and removing the store's languages (`docs/translations.md`). |
 | `read_translations`, `write_translations` | Reading translatable content and existing translations; registering and removing translations, which is the only way a translation reaches the storefront. |
 | `read_markets` | Which market web presences serve a language, shown on the Languages and language pages. |
-| `read_content`, `read_online_store_pages`, `read_online_store_navigation` | The translation editor's title search for articles and blogs, pages, and menus. Nothing is written. |
+| `read_content`, `read_online_store_pages`, `read_online_store_navigation` | The translation editor's title search for articles and blogs, pages, and menus; the store menu reads menus to find the one it made. |
+| `write_online_store_navigation` | Making and updating the store menu from the product type tree (`docs/attributes.md` § Store menu). Only the menu this app made, under its handle, is written. |
+| `read_publications`, `write_publications` | Publishing a collection the store menu makes to the online store, so its menu entry opens. Only collections this app has just created are published. |
 
 **`write_orders` is deliberately not requested.** Synchronising Shopify into
 MetaKocka never writes to a Shopify order, so asking for it would be permission

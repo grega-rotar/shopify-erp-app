@@ -24,7 +24,7 @@ import { authenticate } from "~/adapters/shopify/shopify.server";
 import { ConfirmModal } from "~/web/components/confirm-modal";
 import { phaseFor } from "~/domain/sales/lifecycle";
 import type { CampaignStatus } from "~/domain/sales/types";
-import { formatDateTime } from "~/web/lib/datetime";
+import { formatListDateTime } from "~/web/lib/datetime";
 import {
   actorFromSession,
   principalFromSession,
@@ -210,7 +210,7 @@ export default function Sales() {
   }, [result]);
 
   return (
-    <s-page heading="Sales">
+    <s-page heading="Sales" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
@@ -264,24 +264,259 @@ export default function Sales() {
         </s-button>
       </s-modal>
 
-      <s-stack direction="block" gap="large">
-        {result && !result.ok ? (
-          <s-banner tone="critical" heading="That did not work">
-            <s-paragraph>{result.message}</s-paragraph>
-          </s-banner>
-        ) : null}
+      <s-query-container>
+        <s-stack direction="block" gap="base">
+          {result && !result.ok ? (
+            <s-banner tone="critical" heading="That did not work">
+              <s-paragraph>{result.message}</s-paragraph>
+            </s-banner>
+          ) : null}
 
-        {catalogue.snapshotAt === null && !catalogue.reading ? (
-          <s-banner
-            tone="warning"
-            heading="The catalogue has not been read yet"
-          >
-            <s-stack direction="block" gap="small-300">
-              <s-paragraph>
-                Campaigns choose products from a copy of the catalogue. Read it
-                once before building a campaign; it stays up to date on its own
-                afterwards.
-              </s-paragraph>
+          {catalogue.snapshotAt === null && !catalogue.reading ? (
+            <s-banner
+              tone="warning"
+              heading="The catalogue has not been read yet"
+            >
+              <s-stack direction="block" gap="small-300">
+                <s-paragraph>
+                  Campaigns choose products from a copy of the catalogue. Read
+                  it once before building a campaign; it stays up to date on its
+                  own afterwards.
+                </s-paragraph>
+                <s-stack direction="inline">
+                  <s-button
+                    type="button"
+                    onClick={() =>
+                      fetcher.submit(
+                        { intent: "refresh-catalogue" },
+                        { method: "post" },
+                      )
+                    }
+                  >
+                    Read the catalogue
+                  </s-button>
+                </s-stack>
+              </s-stack>
+            </s-banner>
+          ) : null}
+
+          {cards.length === 0 ? (
+            <s-section>
+              <s-box paddingBlock="large-100">
+                <s-stack direction="block" gap="base" alignItems="center">
+                  <s-heading>No campaigns yet</s-heading>
+                  <s-text color="subdued">
+                    Put part of the catalogue on sale for a while. The original
+                    prices are put back when it ends.
+                  </s-text>
+                  <s-button
+                    variant="primary"
+                    type="button"
+                    onClick={() =>
+                      fetcher.submit({ intent: "create" }, { method: "post" })
+                    }
+                    {...(fetcher.state !== "idle" ? { disabled: true } : {})}
+                  >
+                    Create campaign
+                  </s-button>
+                </s-stack>
+              </s-box>
+            </s-section>
+          ) : null}
+
+          {GROUPS.map((group) => {
+            const rows = cards.filter((card) =>
+              group.status.includes(card.status),
+            );
+            if (rows.length === 0) return null;
+            const shown =
+              group.heading === "Finished"
+                ? rows.slice(0, FINISHED_SHOWN)
+                : rows;
+            return (
+              <s-section key={group.heading} padding="none">
+                <s-stack direction="block" gap="none">
+                  <s-box padding="base">
+                    <s-stack
+                      direction="inline"
+                      gap="small-300"
+                      alignItems="center"
+                    >
+                      <s-heading>{group.heading}</s-heading>
+                      <s-badge>{rows.length.toLocaleString("en")}</s-badge>
+                    </s-stack>
+                  </s-box>
+                  <s-table variant="auto">
+                    <s-table-header-row>
+                      <s-table-header listSlot="primary">
+                        Campaign
+                      </s-table-header>
+                      <s-table-header listSlot="inline">Status</s-table-header>
+                      <s-table-header listSlot="labeled">
+                        Discount
+                      </s-table-header>
+                      <s-table-header listSlot="labeled">When</s-table-header>
+                      <s-table-header listSlot="labeled" format="numeric">
+                        Variants
+                      </s-table-header>
+                      <s-table-header listSlot="inline">
+                        <s-text accessibilityVisibility="exclusive">
+                          Actions
+                        </s-text>
+                      </s-table-header>
+                    </s-table-header-row>
+                    <s-table-body>
+                      {shown.map((card) => {
+                        const running =
+                          card.run &&
+                          (card.run.status === "queued" ||
+                            card.run.status === "running");
+                        return (
+                          <s-table-row
+                            key={card.id}
+                            clickDelegate={`open-campaign-${card.id}`}
+                          >
+                            <s-table-cell>
+                              <s-stack direction="block" gap="none">
+                                <s-link
+                                  id={`open-campaign-${card.id}`}
+                                  href={`/app/sales/${card.id}`}
+                                >
+                                  {card.name}
+                                </s-link>
+                                {running && card.run ? (
+                                  <s-text color="subdued">
+                                    {`${card.run.kind === "restore" || card.run.kind === "release" ? "Putting prices back" : "Applying sale"}… ${card.run.done.toLocaleString("en")} of ${card.run.total.toLocaleString("en")}`}
+                                  </s-text>
+                                ) : null}
+                              </s-stack>
+                            </s-table-cell>
+                            <s-table-cell>
+                              <s-stack direction="inline" gap="small-300">
+                                <s-badge
+                                  {...(card.status === "active"
+                                    ? { tone: "success" as const }
+                                    : card.status === "scheduled"
+                                      ? { tone: "info" as const }
+                                      : {})}
+                                >
+                                  {STATUS_LABEL[card.status]}
+                                </s-badge>
+                                {card.phase !== "idle" &&
+                                card.phase !== "applied" ? (
+                                  <s-badge
+                                    tone={
+                                      card.phase === "needs_attention" ||
+                                      card.phase === "partially_applied"
+                                        ? "critical"
+                                        : "info"
+                                    }
+                                  >
+                                    {PHASE_LABEL[card.phase]}
+                                  </s-badge>
+                                ) : null}
+                              </s-stack>
+                            </s-table-cell>
+                            <s-table-cell>{card.discount}</s-table-cell>
+                            <s-table-cell>
+                              <s-text color="subdued">
+                                {whenOf(card, timeZone)}
+                              </s-text>
+                            </s-table-cell>
+                            <s-table-cell>
+                              <s-stack direction="block" gap="none">
+                                <s-text>
+                                  {card.status === "active"
+                                    ? card.onSale.toLocaleString("en")
+                                    : "—"}
+                                </s-text>
+                                {card.failed > 0 || card.review > 0 ? (
+                                  <s-text tone="critical">
+                                    {[
+                                      card.failed > 0
+                                        ? `${card.failed} failed`
+                                        : null,
+                                      card.review > 0
+                                        ? `${card.review} to decide`
+                                        : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </s-text>
+                                ) : null}
+                              </s-stack>
+                            </s-table-cell>
+                            <s-table-cell>
+                              {card.deletable ? (
+                                <s-stack
+                                  direction="inline"
+                                  justifyContent="end"
+                                >
+                                  <s-button
+                                    tone="critical"
+                                    accessibilityLabel={`Delete ${card.name}`}
+                                    command="--show"
+                                    commandFor={`confirm-delete-${card.id}`}
+                                    {...(fetcher.state !== "idle"
+                                      ? { disabled: true }
+                                      : {})}
+                                  >
+                                    Delete
+                                  </s-button>
+                                  <ConfirmModal
+                                    id={`confirm-delete-${card.id}`}
+                                    heading={`Delete “${card.name}”?`}
+                                    confirmLabel="Delete"
+                                    onConfirm={() =>
+                                      fetcher.submit(
+                                        { intent: "delete", id: card.id },
+                                        { method: "post" },
+                                      )
+                                    }
+                                  >
+                                    <s-paragraph>
+                                      The campaign, its rules and its price
+                                      snapshot are removed. No price in Shopify
+                                      changes. This cannot be undone; the
+                                      activity trail stays.
+                                    </s-paragraph>
+                                  </ConfirmModal>
+                                </s-stack>
+                              ) : null}
+                            </s-table-cell>
+                          </s-table-row>
+                        );
+                      })}
+                    </s-table-body>
+                  </s-table>
+                  {rows.length > shown.length ? (
+                    <s-box padding="base">
+                      <s-text color="subdued">
+                        {`Showing the latest ${shown.length} of ${rows.length}.`}
+                      </s-text>
+                    </s-box>
+                  ) : null}
+                </s-stack>
+              </s-section>
+            );
+          })}
+
+          <s-section>
+            <s-grid
+              gridTemplateColumns="@container (inline-size <= 560px) 1fr, 1fr auto"
+              gap="base"
+              alignItems="center"
+            >
+              <s-stack direction="block" gap="small-500">
+                <s-heading>Catalogue</s-heading>
+                <s-text color="subdued">
+                  {catalogue.reading
+                    ? "Reading the catalogue from Shopify now."
+                    : catalogue.snapshotAt
+                      ? `${catalogue.products.toLocaleString("en")} products · ${catalogue.variants.toLocaleString("en")} variants · read ${formatListDateTime(catalogue.snapshotAt)}`
+                      : "Not read yet."}
+                </s-text>
+              </s-stack>
               <s-stack direction="inline">
                 <s-button
                   type="button"
@@ -291,199 +526,51 @@ export default function Sales() {
                       { method: "post" },
                     )
                   }
+                  {...(catalogue.reading
+                    ? { loading: true, disabled: true }
+                    : {})}
                 >
-                  Read the catalogue
+                  Read again
                 </s-button>
               </s-stack>
-            </s-stack>
-          </s-banner>
-        ) : null}
-
-        {cards.length === 0 ? (
-          <s-section heading="No campaigns yet">
-            <s-paragraph>
-              Create a campaign to put part of the catalogue on sale for a
-              while, with the original prices put back when it ends.
-            </s-paragraph>
+            </s-grid>
           </s-section>
-        ) : null}
-
-        {GROUPS.map((group) => {
-          const rows = cards.filter((card) =>
-            group.status.includes(card.status),
-          );
-          if (rows.length === 0) return null;
-          const shown =
-            group.heading === "Finished" ? rows.slice(0, FINISHED_SHOWN) : rows;
-          return (
-            <s-section key={group.heading} heading={group.heading}>
-              <s-stack direction="block" gap="base">
-                {shown.map((card) => (
-                  <s-box
-                    key={card.id}
-                    padding="base"
-                    border="base"
-                    borderRadius="base"
-                  >
-                    <s-grid
-                      gridTemplateColumns="@container (inline-size <= 560px) 1fr, 1fr auto"
-                      gap="base"
-                      alignItems="center"
-                    >
-                      <s-stack direction="block" gap="small-500">
-                        <s-stack
-                          direction="inline"
-                          gap="small-300"
-                          alignItems="center"
-                        >
-                          <s-text type="strong">{card.name}</s-text>
-                          {card.status !== "active" ? (
-                            <s-badge>{STATUS_LABEL[card.status]}</s-badge>
-                          ) : null}
-                          {card.phase !== "idle" && card.phase !== "applied" ? (
-                            <s-badge
-                              tone={
-                                card.phase === "needs_attention" ||
-                                card.phase === "partially_applied"
-                                  ? "critical"
-                                  : "info"
-                              }
-                            >
-                              {PHASE_LABEL[card.phase]}
-                            </s-badge>
-                          ) : null}
-                        </s-stack>
-                        <s-text color="subdued">
-                          {summarise(card, timeZone)}
-                        </s-text>
-                        {card.run &&
-                        (card.run.status === "queued" ||
-                          card.run.status === "running") ? (
-                          <s-text color="subdued">
-                            {`${card.run.kind === "restore" || card.run.kind === "release" ? "Putting prices back" : "Applying sale"}… ${card.run.done.toLocaleString("en")} / ${card.run.total.toLocaleString("en")} variants`}
-                          </s-text>
-                        ) : null}
-                      </s-stack>
-                      <s-stack direction="inline" gap="small-300">
-                        <s-button href={`/app/sales/${card.id}`}>View</s-button>
-                        {card.deletable ? (
-                          <>
-                            <s-button
-                              tone="critical"
-                              accessibilityLabel={`Delete ${card.name}`}
-                              command="--show"
-                              commandFor={`confirm-delete-${card.id}`}
-                              {...(fetcher.state !== "idle"
-                                ? { disabled: true }
-                                : {})}
-                            >
-                              Delete
-                            </s-button>
-                            <ConfirmModal
-                              id={`confirm-delete-${card.id}`}
-                              heading={`Delete “${card.name}”?`}
-                              confirmLabel="Delete"
-                              onConfirm={() =>
-                                fetcher.submit(
-                                  { intent: "delete", id: card.id },
-                                  { method: "post" },
-                                )
-                              }
-                            >
-                              <s-paragraph>
-                                The campaign, its rules and its price snapshot
-                                are removed. No price in Shopify changes. This
-                                cannot be undone; the activity trail stays.
-                              </s-paragraph>
-                            </ConfirmModal>
-                          </>
-                        ) : null}
-                      </s-stack>
-                    </s-grid>
-                  </s-box>
-                ))}
-                {rows.length > shown.length ? (
-                  <s-text color="subdued">
-                    {`Showing the latest ${shown.length} of ${rows.length}.`}
-                  </s-text>
-                ) : null}
-              </s-stack>
-            </s-section>
-          );
-        })}
-
-        <s-section heading="Catalogue">
-          <s-stack direction="block" gap="base">
-            <s-text color="subdued">
-              {catalogue.reading
-                ? "Reading the catalogue from Shopify now."
-                : catalogue.snapshotAt
-                  ? `${catalogue.products.toLocaleString("en")} products and ${catalogue.variants.toLocaleString("en")} variants, read ${formatDateTime(catalogue.snapshotAt)}. Prices and products update as Shopify reports changes; collections and metafields on the next read.`
-                  : "Not read yet."}
-            </s-text>
-            <s-stack direction="inline">
-              <s-button
-                type="button"
-                onClick={() =>
-                  fetcher.submit(
-                    { intent: "refresh-catalogue" },
-                    { method: "post" },
-                  )
-                }
-                {...(catalogue.reading ? { disabled: true } : {})}
-              >
-                Read the catalogue again
-              </s-button>
-            </s-stack>
-          </s-stack>
-        </s-section>
-      </s-stack>
+        </s-stack>
+      </s-query-container>
     </s-page>
   );
 }
 
-function summarise(
+/** When a campaign runs, in a few words. */
+function whenOf(
   card: {
     status: CampaignStatus;
-    discount: string;
     startsAt: string | null;
     endsAt: string | null;
     completedAt: string | null;
-    onSale: number;
-    failed: number;
-    review: number;
   },
   timeZone: string,
 ): string {
-  const parts = [card.discount];
   switch (card.status) {
     case "active":
-      parts.push(`${card.onSale.toLocaleString("en")} variants on sale`);
-      if (card.endsAt)
-        parts.push(`ends ${formatInZone(card.endsAt, timeZone)}`);
-      else parts.push("no end date");
-      break;
+      return card.endsAt
+        ? `Ends ${formatInZone(card.endsAt, timeZone)}`
+        : "No end date";
     case "scheduled":
-      if (card.startsAt)
-        parts.push(`starts ${formatInZone(card.startsAt, timeZone)}`);
-      break;
+      return card.startsAt
+        ? `Starts ${formatInZone(card.startsAt, timeZone)}`
+        : "Scheduled";
     case "paused":
-      parts.push("prices restored, ready to resume");
-      break;
+      return "Paused, prices restored";
     case "completed":
-      if (card.completedAt)
-        parts.push(`completed ${formatInZone(card.completedAt, timeZone)}`);
-      break;
+      return card.completedAt
+        ? `Ended ${formatInZone(card.completedAt, timeZone)}`
+        : "Ended";
     case "cancelled":
-      parts.push("cancelled");
-      break;
+      return "Cancelled";
     case "draft":
-      parts.push("not activated");
-      break;
+      return "Not activated";
   }
-  if (card.failed > 0) parts.push(`${card.failed} failed`);
-  if (card.review > 0) parts.push(`${card.review} need a decision`);
-  return parts.join(" · ");
 }
 
 export const headers: HeadersFunction = (headersArgs) =>

@@ -8,6 +8,8 @@ import {
   attentionItems,
   describeSchedule,
   isRunActive,
+  isRunStale,
+  runStatusLabel,
   runStatusTone,
   sourceStatus,
 } from "~/web/lib/sources";
@@ -206,7 +208,7 @@ export function SourceSummaryStrip({
           label="Last run"
           value={
             last
-              ? `${RUN_STATUS_LABEL[last.status]}${
+              ? `${runStatusLabel(last)}${
                   last.finishedAt
                     ? ` · ${formatListDateTime(last.finishedAt)}`
                     : last.startedAt
@@ -443,11 +445,13 @@ export function RunsTable({
             </s-table-cell>
             <s-table-cell>
               <s-badge
-                {...(runStatusTone(run.status)
-                  ? { tone: runStatusTone(run.status) }
-                  : {})}
+                {...(isRunStale(run)
+                  ? { tone: "warning" as const }
+                  : runStatusTone(run.status)
+                    ? { tone: runStatusTone(run.status) }
+                    : {})}
               >
-                {RUN_STATUS_LABEL[run.status]}
+                {runStatusLabel(run)}
               </s-badge>
             </s-table-cell>
             <s-table-cell>
@@ -480,6 +484,7 @@ export function RunsTable({
 /** "4 min 12 s", "Running", or the finish time when the start is unknown. */
 function describeDuration(run: Run): string {
   if (isRunActive(run)) return RUN_STATUS_LABEL[run.status];
+  if (isRunStale(run)) return "Stopped responding";
   if (!run.finishedAt) return "—";
   if (!run.startedAt) return formatListDateTime(run.finishedAt);
   const seconds = Math.max(

@@ -348,7 +348,7 @@ Secrets, on the `Recharge` GitHub environment (the `deploy` job declares
 | `DOCKERHUB_TOKEN`    | Docker Hub access token (read/write) for it         |
 | `DEPLOY_HOST`        | The VM's hostname or IP                             |
 | `DEPLOY_SSH_KEY`     | Private key whose public half is in `deploy`'s `authorized_keys` |
-| `DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, the `SHA256:…` part) |
+| `DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint, the `SHA256:…` part. The deploy action's Go SSH client prefers the ECDSA host key, so use `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` (the ED25519 one fails with "host key fingerprint mismatch") |
 
 The `deploy` user must be in the `docker` group, be able to read the checkout,
 and have `curl` available.

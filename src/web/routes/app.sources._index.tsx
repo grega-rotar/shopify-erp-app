@@ -192,6 +192,9 @@ export default function Sources() {
       <s-button slot="secondary-actions" href={SOURCE_ROUTES.review()}>
         {awaitingReview > 0 ? `Review (${awaitingReview})` : "Review"}
       </s-button>
+      <s-button slot="secondary-actions" href={SOURCE_ROUTES.categorization}>
+        AI categorization
+      </s-button>
       <s-button
         slot="secondary-actions"
         icon="settings"

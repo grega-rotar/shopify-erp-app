@@ -66,7 +66,6 @@ export function ProductOverview({
                   <s-text>{issue.text}</s-text>
                   {"tab" in issue.target ? (
                     <s-button
-                      variant="tertiary"
                       onClick={() =>
                         "tab" in issue.target && onTab(issue.target.tab)
                       }
@@ -74,9 +73,7 @@ export function ProductOverview({
                       {issue.action}
                     </s-button>
                   ) : (
-                    <s-button variant="tertiary" href={issue.target.href}>
-                      {issue.action}
-                    </s-button>
+                    <s-button href={issue.target.href}>{issue.action}</s-button>
                   )}
                 </s-grid>
               </s-box>
@@ -87,9 +84,7 @@ export function ProductOverview({
 
       <s-section>
         <CardHeader heading="Product">
-          <s-button variant="tertiary" onClick={() => onTab("details")}>
-            Edit
-          </s-button>
+          <s-button onClick={() => onTab("details")}>Edit</s-button>
         </CardHeader>
         <s-query-container>
           <s-grid
@@ -146,10 +141,8 @@ export function ProductOverview({
               : `${product.variantsCount} variants`
           }
         >
-          <s-button variant="tertiary" onClick={() => onTab("inventory")}>
-            Stock
-          </s-button>
-          <s-button variant="tertiary" onClick={() => onTab("variants")}>
+          <s-button onClick={() => onTab("inventory")}>Stock</s-button>
+          <s-button onClick={() => onTab("variants")}>
             {product.hasOnlyDefaultVariant ? "Edit price" : "Edit variants"}
           </s-button>
         </CardHeader>
@@ -334,9 +327,7 @@ function AttributesCard({
     return (
       <s-section>
         <CardHeader heading="Attributes">
-          <s-button variant="tertiary" onClick={() => onTab("attributes")}>
-            Choose type
-          </s-button>
+          <s-button onClick={() => onTab("attributes")}>Choose type</s-button>
         </CardHeader>
         <s-text color="subdued">
           No product type is chosen yet, so there is nothing to fill in. Choose
@@ -353,9 +344,7 @@ function AttributesCard({
   return (
     <s-section>
       <CardHeader heading="Attributes">
-        <s-button variant="tertiary" onClick={() => onTab("attributes")}>
-          Edit
-        </s-button>
+        <s-button onClick={() => onTab("attributes")}>Edit</s-button>
       </CardHeader>
       <s-stack direction="block" gap="small-300">
         <Facts

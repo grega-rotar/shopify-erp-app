@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 
 import { prisma } from "~/adapters/db/client.server";
+import type {
+  ProductFilters,
+  ProductSort,
+} from "~/domain/products/product-list";
 import { shopDomainOf, type Principal } from "~/domain/types";
 
 /**
@@ -35,8 +39,14 @@ export type ProductStatusFilter = (typeof PRODUCT_STATUS_FILTERS)[number];
 export interface ProductListQuery {
   q: string;
   status: ProductStatusFilter;
+  /** Leaves archived products out of "all"; ignored by any other status. */
+  hideArchived: boolean;
+  filters: ProductFilters;
+  sort: ProductSort;
   page: number;
   pageSize: number;
+  /** Only these products (Shopify GIDs), such as those with AI suggestions waiting. */
+  productIds?: readonly string[];
 }
 
 export interface ProductListRow {
@@ -44,7 +54,9 @@ export interface ProductListRow {
   title: string;
   vendor: string | null;
   productType: string | null;
+  categoryName: string | null;
   status: string | null;
+  tags: string[];
   imageUrl: string | null;
   variants: number;
   /** The one SKU of a single-variant product; null otherwise. */
@@ -52,6 +64,7 @@ export interface ProductListRow {
   minPriceMinor: number | null;
   maxPriceMinor: number | null;
   currency: string | null;
+  updatedAt: Date | null;
 }
 
 export interface ProductListPage {
@@ -60,11 +73,34 @@ export interface ProductListPage {
   snapshotAt: Date | null;
 }
 
+function orderFor(
+  sort: ProductSort,
+): Prisma.CatalogProductOrderByWithRelationInput[] {
+  const nullsLast = { sort: sort.direction, nulls: "last" } as const;
+  const tiebreak: Prisma.CatalogProductOrderByWithRelationInput[] = [
+    { title: "asc" },
+    { shopifyProductId: "asc" },
+  ];
+  switch (sort.key) {
+    case "title":
+      return [{ title: sort.direction }, { shopifyProductId: "asc" }];
+    case "updated":
+      return [{ shopifyUpdatedAt: nullsLast }, ...tiebreak];
+    case "productType":
+      return [{ productType: nullsLast }, ...tiebreak];
+    case "vendor":
+      return [{ vendor: nullsLast }, ...tiebreak];
+    case "category":
+      return [{ categoryName: nullsLast }, ...tiebreak];
+  }
+}
+
 /**
  * One page of the catalogue snapshot, searched by title, vendor, product
- * type or any variant's SKU. The snapshot is what the list reads: it is
- * kept current by `products/update` and re-read nightly, and a list of
- * every product is not a page load that should wait on Shopify.
+ * type or any variant's SKU, narrowed by status and facets, and sorted.
+ * The snapshot is what the list reads: it is kept current by
+ * `products/update` and re-read nightly, and a list of every product is not
+ * a page load that should wait on Shopify.
  */
 export async function listCatalogueProducts(
   principal: Principal,
@@ -77,30 +113,44 @@ export async function listCatalogueProducts(
   if (!shop) throw new Error(`Unknown shop ${shopDomainOf(principal)}`);
 
   const q = query.q.trim();
-  const where: Prisma.CatalogProductWhereInput = {
-    shopId: shop.id,
-    ...(query.status === "all" ? {} : { status: query.status.toUpperCase() }),
-    ...(q === ""
-      ? {}
-      : {
-          OR: [
-            { title: { contains: q, mode: "insensitive" } },
-            { vendor: { contains: q, mode: "insensitive" } },
-            { productType: { contains: q, mode: "insensitive" } },
-            {
-              variants: {
-                some: { sku: { contains: q, mode: "insensitive" } },
-              },
-            },
-          ],
-        }),
-  };
+  const { filters } = query;
+  const and: Prisma.CatalogProductWhereInput[] = [];
+  if (query.status !== "all") {
+    and.push({ status: query.status.toUpperCase() });
+  } else if (query.hideArchived) {
+    and.push({ OR: [{ status: null }, { status: { not: "ARCHIVED" } }] });
+  }
+  if (filters.vendor.length > 0) and.push({ vendor: { in: filters.vendor } });
+  if (filters.productType.length > 0) {
+    and.push({ productType: { in: filters.productType } });
+  }
+  if (filters.category.length > 0) {
+    and.push({ categoryName: { in: filters.category } });
+  }
+  if (filters.tag.length > 0) and.push({ tags: { hasSome: filters.tag } });
+  if (query.productIds)
+    and.push({ shopifyProductId: { in: [...query.productIds] } });
+  if (q !== "") {
+    and.push({
+      OR: [
+        { title: { contains: q, mode: "insensitive" } },
+        { vendor: { contains: q, mode: "insensitive" } },
+        { productType: { contains: q, mode: "insensitive" } },
+        {
+          variants: {
+            some: { sku: { contains: q, mode: "insensitive" } },
+          },
+        },
+      ],
+    });
+  }
+  const where: Prisma.CatalogProductWhereInput = { shopId: shop.id, AND: and };
 
   const [total, products] = await Promise.all([
     prisma.catalogProduct.count({ where }),
     prisma.catalogProduct.findMany({
       where,
-      orderBy: [{ title: "asc" }, { shopifyProductId: "asc" }],
+      orderBy: orderFor(query.sort),
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,
       select: {
@@ -108,8 +158,11 @@ export async function listCatalogueProducts(
         title: true,
         vendor: true,
         productType: true,
+        categoryName: true,
         status: true,
+        tags: true,
         imageUrl: true,
+        shopifyUpdatedAt: true,
         variants: {
           select: { sku: true, priceMinor: true, currency: true },
         },
@@ -127,7 +180,9 @@ export async function listCatalogueProducts(
         title: product.title,
         vendor: product.vendor,
         productType: product.productType,
+        categoryName: product.categoryName,
         status: product.status,
+        tags: product.tags,
         imageUrl: product.imageUrl,
         variants: product.variants.length,
         sku:
@@ -137,8 +192,60 @@ export async function listCatalogueProducts(
         minPriceMinor: prices.length > 0 ? Math.min(...prices) : null,
         maxPriceMinor: prices.length > 0 ? Math.max(...prices) : null,
         currency: product.variants[0]?.currency ?? null,
+        updatedAt: product.shopifyUpdatedAt,
       };
     }),
+  };
+}
+
+/** How many values of one facet the filter offers; the rest are searched. */
+const FACET_OPTION_LIMIT = 500;
+
+/**
+ * The values each facet of the list can be filtered by, A to Z: every
+ * vendor, product type, category and tag the snapshot holds.
+ */
+export async function catalogueFacetOptions(
+  principal: Principal,
+): Promise<ProductFilters> {
+  const shopId = await shopIdFor(principal);
+  const present = (values: ReadonlyArray<string | null>): string[] =>
+    values.filter((value): value is string => !!value && value.trim() !== "");
+  const [vendors, productTypes, categories, tagRows] = await Promise.all([
+    prisma.catalogProduct.findMany({
+      where: { shopId, vendor: { not: null } },
+      distinct: ["vendor"],
+      orderBy: { vendor: "asc" },
+      select: { vendor: true },
+      take: FACET_OPTION_LIMIT,
+    }),
+    prisma.catalogProduct.findMany({
+      where: { shopId, productType: { not: null } },
+      distinct: ["productType"],
+      orderBy: { productType: "asc" },
+      select: { productType: true },
+      take: FACET_OPTION_LIMIT,
+    }),
+    prisma.catalogProduct.findMany({
+      where: { shopId, categoryName: { not: null } },
+      distinct: ["categoryName"],
+      orderBy: { categoryName: "asc" },
+      select: { categoryName: true },
+      take: FACET_OPTION_LIMIT,
+    }),
+    prisma.$queryRaw<Array<{ tag: string }>>`
+      SELECT DISTINCT unnest(tags) AS tag
+      FROM catalog_product
+      WHERE shop_id = ${shopId}
+      ORDER BY tag
+      LIMIT ${FACET_OPTION_LIMIT}
+    `,
+  ]);
+  return {
+    vendor: present(vendors.map((row) => row.vendor)),
+    productType: present(productTypes.map((row) => row.productType)),
+    category: present(categories.map((row) => row.categoryName)),
+    tag: tagRows.map((row) => row.tag).filter((tag) => tag.trim() !== ""),
   };
 }
 

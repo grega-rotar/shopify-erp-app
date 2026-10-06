@@ -49,7 +49,16 @@ const NEW_MODAL_ID = "new-set";
 const memberList = z.array(z.string()).max(1000);
 const EDIT_MODAL_ID = "edit-set";
 const DELETE_MODAL_ID = "delete-set";
-const DETACH_MODAL_ID = "detach-set";
+const ATTACHED_MODAL_ID = "set-attached-to";
+
+/** "Bottoms, Hats, Ponchos and 4 more": the last name of each type, a few. */
+function attachedSummary(labels: readonly string[], shown = 3): string {
+  const names = labels.map((label) => label.split(" › ").at(-1) ?? label);
+  const head = names.slice(0, shown).join(", ");
+  return names.length > shown
+    ? `${head} and ${names.length - shown} more`
+    : head;
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -184,11 +193,7 @@ export default function AttributeSets() {
   const [pendingDelete, setPendingDelete] = useState<
     (typeof sets)[number] | null
   >(null);
-  const [pendingDetach, setPendingDetach] = useState<{
-    assignmentId: string;
-    setName: string;
-    typeLabel: string;
-  } | null>(null);
+  const [attachedOf, setAttachedOf] = useState<string | null>(null);
   const [attach, setAttach] = useState({ typeId: "", setId: "" });
 
   useEffect(() => {
@@ -201,6 +206,8 @@ export default function AttributeSets() {
       { ...fields, revision: String(revision) },
       { method: "post" },
     );
+
+  const managed = sets.find((set) => set.id === attachedOf) ?? null;
 
   const draftError =
     draftTried && draft.name.trim() === "" ? "Enter a name." : undefined;
@@ -299,7 +306,7 @@ export default function AttributeSets() {
   );
 
   return (
-    <s-page heading="Metafields">
+    <s-page heading="Metafields" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
@@ -338,23 +345,69 @@ export default function AttributeSets() {
         </s-paragraph>
       </ConfirmModal>
 
-      <ConfirmModal
-        id={DETACH_MODAL_ID}
-        heading={`Detach “${pendingDetach?.setName ?? ""}” from ${pendingDetach?.typeLabel ?? ""}?`}
-        confirmLabel="Detach"
-        onConfirm={() => {
-          if (pendingDetach)
-            submit({
-              intent: "detach-set",
-              assignmentId: pendingDetach.assignmentId,
-            });
-        }}
+      {/*
+       * Where one set is attached, each place with its own Detach: the
+       * table row says how many and which, this is where they are changed.
+       */}
+      <s-modal
+        id={ATTACHED_MODAL_ID}
+        heading={`Where “${managed?.name ?? ""}” is attached`}
+        size="large"
       >
-        <s-paragraph>
-          The type and every type beneath it lose the set&apos;s attributes,
-          unless another source supplies them.
-        </s-paragraph>
-      </ConfirmModal>
+        <s-stack direction="block" gap="base">
+          <s-text color="subdued">
+            Detaching removes the set&apos;s attributes from that type and every
+            type beneath it, unless another set or a direct assignment gives
+            them.
+          </s-text>
+          {managed && managed.attachedTo.length > 0 ? (
+            <s-table variant="list">
+              <s-table-header-row>
+                <s-table-header listSlot="primary">Product type</s-table-header>
+                <s-table-header listSlot="inline">
+                  <s-text accessibilityVisibility="exclusive">Actions</s-text>
+                </s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {managed.attachedTo.map((source) => (
+                  <s-table-row key={source.assignmentId}>
+                    <s-table-cell>
+                      <s-link href={PRODUCT_SETUP_ROUTES.type(source.typeId)}>
+                        {source.label}
+                      </s-link>
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-stack direction="inline" justifyContent="end">
+                        <s-button
+                          accessibilityLabel={`Detach ${managed.name} from ${source.label}`}
+                          onClick={() =>
+                            submit({
+                              intent: "detach-set",
+                              assignmentId: source.assignmentId,
+                            })
+                          }
+                          {...(busy ? { disabled: true } : {})}
+                        >
+                          Detach
+                        </s-button>
+                      </s-stack>
+                    </s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
+          ) : (
+            <s-text color="subdued">It is not attached anywhere now.</s-text>
+          )}
+        </s-stack>
+        <s-button
+          slot="primary-action"
+          command="--hide"
+          commandFor={ATTACHED_MODAL_ID}
+        >
+          Done
+        </s-button>
+      </s-modal>
 
       <s-stack direction="block" gap="base">
         <ProductSetupNav current="sets" />
@@ -432,46 +485,32 @@ export default function AttributeSets() {
                       {set.members.length === 0 ? (
                         <s-text color="subdued">Empty</s-text>
                       ) : (
-                        <s-text>
-                          {set.members.map((m) => m.name).join(", ")}
-                        </s-text>
+                        <s-stack direction="block" gap="none">
+                          <s-text>
+                            {countOf(set.members.length, "attribute")}
+                          </s-text>
+                          <s-text color="subdued">
+                            {attachedSummary(
+                              set.members.map((m) => m.name),
+                              4,
+                            )}
+                          </s-text>
+                        </s-stack>
                       )}
                     </s-table-cell>
                     <s-table-cell>
                       {set.attachedTo.length === 0 ? (
                         <s-text color="subdued">Not attached</s-text>
                       ) : (
-                        <s-stack direction="block" gap="small-500">
-                          {set.attachedTo.map((source) => (
-                            <s-stack
-                              key={source.assignmentId}
-                              direction="inline"
-                              gap="small-400"
-                              alignItems="center"
-                            >
-                              <s-link
-                                href={PRODUCT_SETUP_ROUTES.type(source.typeId)}
-                              >
-                                {source.label}
-                              </s-link>
-                              <s-button
-                                variant="tertiary"
-                                accessibilityLabel={`Detach ${set.name} from ${source.label}`}
-                                command="--show"
-                                commandFor={DETACH_MODAL_ID}
-                                onClick={() =>
-                                  setPendingDetach({
-                                    assignmentId: source.assignmentId,
-                                    setName: set.name,
-                                    typeLabel: source.label,
-                                  })
-                                }
-                                {...(busy ? { disabled: true } : {})}
-                              >
-                                Detach
-                              </s-button>
-                            </s-stack>
-                          ))}
+                        <s-stack direction="block" gap="none">
+                          <s-text>
+                            {countOf(set.attachedTo.length, "product type")}
+                          </s-text>
+                          <s-text color="subdued">
+                            {attachedSummary(
+                              set.attachedTo.map((source) => source.label),
+                            )}
+                          </s-text>
                         </s-stack>
                       )}
                     </s-table-cell>
@@ -502,6 +541,15 @@ export default function AttributeSets() {
                         >
                           Edit
                         </s-button>
+                        {set.attachedTo.length > 0 ? (
+                          <s-button
+                            command="--show"
+                            commandFor={ATTACHED_MODAL_ID}
+                            onClick={() => setAttachedOf(set.id)}
+                          >
+                            Where it is attached
+                          </s-button>
+                        ) : null}
                         <s-button
                           tone="critical"
                           command="--show"

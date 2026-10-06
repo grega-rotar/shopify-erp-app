@@ -10,8 +10,11 @@ import {
 } from "react-router";
 
 import { isConfigured } from "~/adapters/ai/openai.server";
+import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
+import { listAutofills } from "~/adapters/db/repositories/product-autofill.server";
 import { listLanguageSettings } from "~/adapters/db/repositories/translations.server";
+import { autofillAvailability } from "~/adapters/products/autofill.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
 import {
   APPROVE_BATCH,
@@ -33,6 +36,14 @@ import { keptKeys } from "~/domain/translations/types";
 import { BulkBar, useSelection } from "~/web/components/bulk-selection";
 import { ConfirmModal } from "~/web/components/confirm-modal";
 import { Dropdown } from "~/web/components/dropdown";
+import {
+  confidenceLabel,
+  confidenceTone,
+  isAutofillWorking,
+  type AutofillView,
+} from "~/web/lib/autofill";
+import { autofillListAction } from "~/web/lib/autofill-actions.server";
+import { autofillView } from "~/web/lib/autofill.server";
 import { formatListDateTime } from "~/web/lib/datetime";
 import { useLiveRevalidation, useWatchWindow } from "~/web/lib/live";
 import {
@@ -50,7 +61,9 @@ import { TRANSLATION_ROUTES, localeLabel } from "~/web/lib/translations";
  * The list is Shopify's — drafts carrying the review tag — read as the page
  * opens; nothing about a product under review is stored here. Each row says
  * which of the store's languages still lack a translation, can have them
- * filled by the AI, and is approved from here: approving sets it active and
+ * filled by the AI, can have its product type and attributes suggested by
+ * the export portal's AI and the suggestions applied (docs/attributes.md
+ * § AI autofill), and is approved from here: approving sets it active and
  * takes the tag off, and it leaves the list. A missing translation warns
  * before approving; it does not stop it.
  */
@@ -77,6 +90,7 @@ interface Row {
   createdAt: string;
   imageUrl: string | null;
   gaps: LocaleGap[];
+  autofill: AutofillView | null;
 }
 
 async function targetLocales(admin: Parameters<typeof listShopLocales>[0]) {
@@ -96,11 +110,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const after = url.searchParams.get("after");
   const before = url.searchParams.get("before");
 
-  const [locales, sources, languages] = await Promise.all([
-    targetLocales(admin),
-    readPortal(principal, (client) => client.listSources()),
-    listLanguageSettings(principal),
-  ]);
+  const [locales, sources, languages, { schema }, autofillReady] =
+    await Promise.all([
+      targetLocales(admin),
+      readPortal(principal, (client) => client.listSources()),
+      listLanguageSettings(principal),
+      getAttributeSchema(principal),
+      autofillAvailability(principal),
+    ]);
 
   let page: ReviewPage | null = null;
   let failure: string | null = null;
@@ -137,6 +154,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           })
         : [];
     const byId = new Map(resources.map((r) => [r.resourceId, r]));
+    const autofills = await listAutofills(
+      principal,
+      page.products.map((p) => p.id),
+    );
     rows = page.products.map((product) => {
       const resource = byId.get(product.id);
       return {
@@ -158,6 +179,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               kept: (locale) => keepByLocale.get(locale) ?? noneKept,
             })
           : [],
+        autofill: autofillView(schema, autofills.get(product.id)),
       };
     });
   }
@@ -183,6 +205,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     })),
     localesUnavailable: locales === null,
     aiConfigured: isConfigured(),
+    autofillAvailable: autofillReady.ok
+      ? { ok: true as const }
+      : { ok: false as const, message: autofillReady.message },
   };
 };
 
@@ -239,6 +264,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           : `${approved.length} products are live.`,
       approvedIds,
     } satisfies ActionResult;
+  }
+
+  const autofill = await autofillListAction({
+    admin,
+    principal,
+    actor,
+    intent,
+    ids,
+  });
+  if (autofill) {
+    const result: ActionResult = autofill;
+    return result;
   }
 
   if (intent === "translate") {
@@ -371,7 +408,8 @@ export default function Review() {
   const [watching, watch] = useWatchWindow(
     result?.translating ? 180_000 : 30_000,
   );
-  useLiveRevalidation({ active: watching });
+  const autofilling = data.rows.some((row) => isAutofillWorking(row.autofill));
+  useLiveRevalidation({ active: watching || autofilling });
 
   const ids = useMemo(() => rows.map((r) => r.id), [rows]);
   const selection = useSelection(ids);
@@ -422,6 +460,9 @@ export default function Review() {
       <s-link slot="breadcrumb-actions" href={SOURCE_ROUTES.index}>
         Sources
       </s-link>
+      <s-button slot="secondary-actions" href="/app/products?view=review">
+        All AI suggestions
+      </s-button>
       <s-button
         slot="secondary-actions"
         icon="question-circle"
@@ -610,6 +651,9 @@ export default function Review() {
                   <s-table-header listSlot="primary">Product</s-table-header>
                   <s-table-header listSlot="secondary">Source</s-table-header>
                   <s-table-header listSlot="labeled">
+                    Type and attributes
+                  </s-table-header>
+                  <s-table-header listSlot="labeled">
                     Translations
                   </s-table-header>
                   <s-table-header listSlot="labeled">Created</s-table-header>
@@ -626,11 +670,16 @@ export default function Review() {
                       onCheck={(on) => selection.toggle(row.id, on)}
                       localesChecked={data.locales.length > 0}
                       canTranslate={data.aiConfigured}
+                      canAutofill={data.autofillAvailable.ok}
                       translating={busyWith("translate", row.id)}
                       approving={busyWith("approve", row.id)}
+                      autofilling={busyWith("autofill", row.id)}
                       busy={busy}
                       onTranslate={() =>
                         submit({ intent: "translate", ids: row.id })
+                      }
+                      onAutofill={() =>
+                        submit({ intent: "autofill", ids: row.id })
                       }
                       onApprove={() => askApprove([row.id])}
                     />
@@ -646,6 +695,38 @@ export default function Review() {
                 busy={busy}
                 onClear={selection.clear}
                 actions={[
+                  ...(data.autofillAvailable.ok
+                    ? [
+                        {
+                          label: "Autofill selected",
+                          onAct: () =>
+                            submit({
+                              intent: "autofill",
+                              ids: [...selection.selected].join(","),
+                            }),
+                        },
+                      ]
+                    : []),
+                  ...([...selection.selected].some(
+                    (id) => rowsById.get(id)?.autofill?.status === "ready",
+                  )
+                    ? [
+                        {
+                          label: "Apply suggestions",
+                          onAct: () =>
+                            submit({
+                              intent: "apply-autofill",
+                              ids: [...selection.selected]
+                                .filter(
+                                  (id) =>
+                                    rowsById.get(id)?.autofill?.status ===
+                                    "ready",
+                                )
+                                .join(","),
+                            }),
+                        },
+                      ]
+                    : []),
                   ...(data.aiConfigured && data.locales.length > 0
                     ? [
                         {
@@ -679,10 +760,13 @@ function ReviewRow({
   onCheck,
   localesChecked,
   canTranslate,
+  canAutofill,
   translating,
   approving,
+  autofilling,
   busy,
   onTranslate,
+  onAutofill,
   onApprove,
 }: {
   row: Row;
@@ -690,12 +774,17 @@ function ReviewRow({
   onCheck: (on: boolean) => void;
   localesChecked: boolean;
   canTranslate: boolean;
+  canAutofill: boolean;
   translating: boolean;
   approving: boolean;
+  autofilling: boolean;
   busy: boolean;
   onTranslate: () => void;
+  onAutofill: () => void;
   onApprove: () => void;
 }) {
+  const working = isAutofillWorking(row.autofill);
+  const ready = row.autofill?.status === "ready";
   const firstGap = row.gaps[0];
   return (
     <s-table-row>
@@ -736,6 +825,9 @@ function ReviewRow({
         )}
       </s-table-cell>
       <s-table-cell>
+        <AutofillCell view={row.autofill} legacyId={row.legacyId} />
+      </s-table-cell>
+      <s-table-cell>
         {!localesChecked ? (
           <s-text color="subdued">—</s-text>
         ) : firstGap ? (
@@ -754,6 +846,21 @@ function ReviewRow({
       </s-table-cell>
       <s-table-cell>
         <s-stack direction="inline" gap="small-300" justifyContent="end">
+          {ready ? (
+            <s-button href={`/app/products/${row.legacyId}?tab=attributes`}>
+              Review
+            </s-button>
+          ) : null}
+          {canAutofill && !ready ? (
+            <s-button
+              variant="secondary"
+              onClick={onAutofill}
+              {...(autofilling || working ? { loading: true } : {})}
+              {...(busy || working ? { disabled: true } : {})}
+            >
+              Autofill
+            </s-button>
+          ) : null}
           {canTranslate && firstGap ? (
             <s-button
               variant="secondary"
@@ -775,6 +882,89 @@ function ReviewRow({
         </s-stack>
       </s-table-cell>
     </s-table-row>
+  );
+}
+
+/** What AI autofill holds for the product, and the way to review it. */
+/**
+ * What AI autofill holds for the product, read in one glance: the type it
+ * suggests (its name opens the product to review it), where that type sits,
+ * and how many values wait. A badge only when the AI was unsure, since that
+ * is the one thing worth stopping for.
+ */
+function AutofillCell({
+  view,
+  legacyId,
+}: {
+  view: AutofillView | null;
+  legacyId: string;
+}) {
+  const reviewHref = `/app/products/${legacyId}?tab=attributes`;
+  if (!view || view.status === "discarded")
+    return <s-text color="subdued">—</s-text>;
+  if (isAutofillWorking(view))
+    return (
+      <s-stack direction="inline" gap="small-300" alignItems="center">
+        <s-spinner size="base" accessibilityLabel="Autofilling" />
+        <s-text color="subdued">
+          {view.status === "queued" ? "Waiting for the AI" : "Asking the AI"}
+        </s-text>
+      </s-stack>
+    );
+  if (view.status === "failed")
+    return (
+      <s-stack direction="block" gap="none">
+        <s-text tone="critical">Autofill failed</s-text>
+        <s-text color="subdued">{view.error ?? ""}</s-text>
+      </s-stack>
+    );
+
+  const path = view.typePath?.split(" › ") ?? [];
+  const name = path.at(-1) ?? null;
+  // The root every type shares says nothing; the level above the type does.
+  const parent = path.slice(path.length > 2 ? 1 : 0, -1).join(" › ");
+  const values = view.values.length;
+  const valuesText =
+    values === 0
+      ? "nothing to fill"
+      : `${values} ${values === 1 ? "value" : "values"} to fill`;
+
+  if (view.status === "applied")
+    return (
+      <s-stack direction="block" gap="none">
+        <s-text>{name ?? "Applied"}</s-text>
+        <s-text color="subdued">Suggestion applied</s-text>
+      </s-stack>
+    );
+
+  const unsure =
+    view.typeOrigin === "suggested" &&
+    view.confidence !== null &&
+    view.confidence < 0.9;
+  return (
+    <s-stack direction="block" gap="none">
+      <s-stack direction="inline" gap="small-300" alignItems="center">
+        {name ? (
+          <s-link href={reviewHref}>{name}</s-link>
+        ) : (
+          <s-link href={reviewHref}>No type fits</s-link>
+        )}
+        {unsure ? (
+          <s-badge tone={confidenceTone(view.confidence)}>
+            {confidenceLabel(view.confidence) ?? ""}
+          </s-badge>
+        ) : null}
+      </s-stack>
+      <s-text color="subdued">
+        {[
+          parent || null,
+          view.typeOrigin === "kept" ? "Type already set" : "AI suggestion",
+          name ? valuesText : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </s-text>
+    </s-stack>
   );
 }
 

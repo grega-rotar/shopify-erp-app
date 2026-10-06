@@ -4,6 +4,7 @@ import {
   useActionData,
   useLoaderData,
   useNavigation,
+  useSubmit,
   type ActionFunctionArgs,
   type HeadersFunction,
   type LoaderFunctionArgs,
@@ -25,7 +26,8 @@ import {
   TARGET_FOR_KIND,
 } from "~/adapters/queue/redrive.server";
 import { authenticate } from "~/adapters/shopify/shopify.server";
-import { formatDateTime } from "~/web/lib/datetime";
+import { LearnMore } from "~/web/components/learn-more";
+import { formatListDateTime } from "~/web/lib/datetime";
 import {
   areaOfKind,
   ATTENTION_AREAS,
@@ -327,362 +329,347 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { ok: false, message: "Unknown action." };
 };
 
+/**
+ * What happened, without the subject the row already names: the message
+ * opens with the item in quotes ("“Aeryn - P1 Pocket Wing” could not be
+ * translated…"), which the first column shows as a link.
+ */
+function reasonOf(message: string): string {
+  const rest = message.replace(/^[“"][^”"]*[”"]\s+/, "");
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
 export default function Exceptions() {
   const { groups, total, area, resolved } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const navigation = useNavigation();
+  const submit = useSubmit();
   const busy = navigation.state === "submitting";
+  const post = (fields: Record<string, string>) =>
+    submit(fields, { method: "post" });
 
   return (
-    <s-page heading="Needs attention">
+    <s-page heading="Needs attention" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">
         Home
       </s-link>
 
-      <s-stack direction="block" gap="large">
-        {result ? (
-          <s-banner
-            tone={result.ok ? "info" : "critical"}
-            heading={result.ok ? "Done" : "That did not work"}
-          >
-            <s-paragraph>{result.message}</s-paragraph>
-          </s-banner>
-        ) : null}
+      <s-query-container>
+        <s-stack direction="block" gap="base">
+          {result ? (
+            <s-banner
+              tone={result.ok ? "info" : "critical"}
+              heading={result.ok ? "Done" : "That did not work"}
+            >
+              <s-paragraph>{result.message}</s-paragraph>
+            </s-banner>
+          ) : null}
 
-        {/* Reached from a Home row: say what is left out, and how to see it. */}
-        {area && total > 0 ? (
-          <s-stack direction="inline" gap="small-300" alignItems="center">
-            <s-text color="subdued">
-              {groups.length > 0
-                ? `Showing ${area.label.toLowerCase()} only.`
-                : `Nothing in ${area.label.toLowerCase()} needs attention now.`}
-            </s-text>
-            <s-link href="/app/exceptions">{`Show all ${total}`}</s-link>
-          </s-stack>
-        ) : null}
+          {/* Reached from a Home row: say what is left out, and how to see it. */}
+          {area && total > 0 ? (
+            <s-stack direction="inline" gap="small-300" alignItems="center">
+              <s-text color="subdued">
+                {groups.length > 0
+                  ? `Showing ${area.label.toLowerCase()} only.`
+                  : `Nothing in ${area.label.toLowerCase()} needs attention now.`}
+              </s-text>
+              <s-link href="/app/exceptions">{`Show all ${total}`}</s-link>
+            </s-stack>
+          ) : null}
 
-        {total === 0 ? (
-          <s-section heading="Nothing needs attention">
-            <s-paragraph>
-              Orders that cannot be allocated or sent to MetaKocka show up here
-              with what went wrong and what to do about it.
-            </s-paragraph>
-            <s-paragraph>
-              Everything here is re-checked every fifteen minutes. Anything that
-              fixes itself — stock arriving, a product created in MetaKocka, a
-              gateway mapped — is retried and cleared without you doing
-              anything.
-            </s-paragraph>
-          </s-section>
-        ) : (
-          /*
-           * One card per kind of problem, not one per exception.
-           *
-           * Flat, every row repeated the same advice — with four open
-           * exceptions, two of them the same kind, the page was already mostly
-           * duplicated sentences, and at forty it would be unreadable. The
-           * advice belongs to the kind, so it is stated once at the top of the
-           * card; the rows underneath say only what differs between them, which
-           * is the order and what exactly happened to it.
-           *
-           * It also makes the useful action obvious. One cause usually explains
-           * every row in a card — a gateway nobody mapped, stock that ran out —
-           * so the fix is one press for the group rather than one per order.
-           */
-          <>
-            {groups.map((group) => {
+          {total === 0 ? (
+            <s-section>
+              <s-stack direction="block" gap="small-300">
+                <s-heading>Nothing needs attention</s-heading>
+                <s-text color="subdued">
+                  Problems with orders, stock, sales and translations show up
+                  here with what to do about them. Anything that fixes itself is
+                  retried and cleared every fifteen minutes.
+                </s-text>
+              </s-stack>
+            </s-section>
+          ) : (
+            /*
+             * One card per kind of problem: the advice belongs to the kind and
+             * is said once, the rows say only what differs, and the bulk
+             * action — usually the right one — sits in the card's header.
+             */
+            groups.map((group) => {
               const copy = describeExceptionKind(group.kind);
               const count = group.count;
               const loaded = group.rows.length;
 
               return (
-                <s-section
-                  key={group.kind}
-                  heading={`${copy.label}${count > 1 ? ` (${count})` : ""}`}
-                >
-                  <s-stack direction="block" gap="base">
-                    <s-text color="subdued">{copy.guidance}</s-text>
-                    {group.hasMore ? (
-                      <s-stack
-                        direction="inline"
-                        gap="small-300"
-                        alignItems="center"
-                      >
-                        <s-text color="subdued">
-                          {`Showing ${loaded} of ${count}.`}
-                        </s-text>
-                        {/*
-                         * Paging is per category: this form's hidden inputs
-                         * carry every other visible category's current limit
-                         * unchanged, so loading more of this one never resets
-                         * or hides another that the merchant already expanded.
-                         */}
-                        <Form method="get">
-                          {area ? (
-                            <input type="hidden" name="area" value={area.key} />
+                <s-section key={group.kind} padding="none">
+                  <s-stack direction="block" gap="none">
+                    <s-box padding="base">
+                      <s-stack direction="block" gap="small-300">
+                        <s-grid
+                          gridTemplateColumns="@container (inline-size <= 640px) 1fr, 1fr auto"
+                          gap="small-300"
+                          alignItems="center"
+                        >
+                          <s-stack
+                            direction="inline"
+                            gap="small-300"
+                            alignItems="center"
+                          >
+                            <s-heading>{copy.label}</s-heading>
+                            <s-badge>{count.toLocaleString("en")}</s-badge>
+                          </s-stack>
+                          {count > 1 ? (
+                            <s-stack direction="inline" gap="small-300">
+                              {group.retryable ? (
+                                <s-button
+                                  onClick={() =>
+                                    post({
+                                      intent: "retry-kind",
+                                      kind: group.kind,
+                                    })
+                                  }
+                                  {...(busy ? { disabled: true } : {})}
+                                >
+                                  {`Retry all ${count}`}
+                                </s-button>
+                              ) : null}
+                              <s-button
+                                onClick={() =>
+                                  post({
+                                    intent: "resolve-kind",
+                                    kind: group.kind,
+                                  })
+                                }
+                                {...(busy ? { disabled: true } : {})}
+                              >
+                                {`Resolve all ${count}`}
+                              </s-button>
+                            </s-stack>
                           ) : null}
-                          {groups.map((g) => (
-                            <input
-                              key={g.kind}
-                              type="hidden"
-                              name={limitParamFor(g.kind)}
-                              value={
-                                g.kind === group.kind
-                                  ? group.limit + EXCEPTIONS_PAGE_SIZE
-                                  : g.limit
-                              }
-                            />
-                          ))}
-                          <s-button
-                            type="submit"
-                            variant="tertiary"
-                            {...(busy ? { disabled: true } : {})}
-                          >
-                            Load more
-                          </s-button>
-                        </Form>
+                        </s-grid>
+                        <LearnMore label="What to do">
+                          <s-paragraph>{copy.guidance}</s-paragraph>
+                        </LearnMore>
                       </s-stack>
-                    ) : null}
+                    </s-box>
 
                     {/*
-                     * Bulk first, because it is usually the right one. Only shown
-                     * when there is more than one: for a single row the buttons
-                     * on the row itself say the same thing without the ambiguity
-                     * of "all".
-                     */}
-                    {count > 1 ? (
-                      <s-stack
-                        direction="inline"
-                        gap="small-300"
-                        alignItems="center"
-                      >
-                        {group.retryable ? (
-                          <Form method="post">
-                            <input
-                              type="hidden"
-                              name="intent"
-                              value="retry-kind"
-                            />
-                            <input
-                              type="hidden"
-                              name="kind"
-                              value={group.kind}
-                            />
-                            <s-button
-                              type="submit"
-                              variant="secondary"
-                              {...(busy ? { disabled: true } : {})}
-                            >
-                              {`Retry all ${count}`}
-                            </s-button>
-                          </Form>
-                        ) : null}
-                        <Form method="post">
-                          <input
-                            type="hidden"
-                            name="intent"
-                            value="resolve-kind"
-                          />
-                          <input type="hidden" name="kind" value={group.kind} />
-                          <s-button
-                            type="submit"
-                            variant="tertiary"
-                            {...(busy ? { disabled: true } : {})}
-                          >
-                            {`Mark all ${count} resolved`}
-                          </s-button>
-                        </Form>
-                      </s-stack>
-                    ) : null}
-
-                    {/*
-                     * `variant="auto"` keeps this inside §2.6 at 375px: Polaris
-                     * turns the columns into a labelled list rather than letting
-                     * the page scroll sideways.
+                     * `variant="auto"` turns the columns into a labelled list
+                     * on a narrow screen rather than scrolling sideways.
                      */}
                     <s-table variant="auto">
                       <s-table-header-row>
                         <s-table-header listSlot="primary">
                           {subjectHeading(group.kind)}
                         </s-table-header>
-                        <s-table-header listSlot="secondary">
-                          What happened
+                        <s-table-header listSlot="labeled">
+                          Since
                         </s-table-header>
-                        <s-table-header listSlot="kicker">Since</s-table-header>
                         <s-table-header listSlot="inline">
-                          Actions
+                          <s-text accessibilityVisibility="exclusive">
+                            Actions
+                          </s-text>
                         </s-table-header>
                       </s-table-header-row>
 
                       <s-table-body>
-                        {group.rows.map((exception) => (
-                          <s-table-row key={exception.id}>
-                            <s-table-cell>
-                              {exception.orderNumber && exception.orderId ? (
-                                <s-link
-                                  href={`/app/orders/${exception.orderId}`}
-                                >
-                                  {exception.orderNumber}
-                                </s-link>
-                              ) : exception.campaignId ? (
-                                <s-link
-                                  href={`/app/sales/${exception.campaignId}/variants`}
-                                >
-                                  Open campaign
-                                </s-link>
-                              ) : exception.subject ? (
-                                <s-link href={exception.subject.href}>
-                                  {exception.subject.label}
-                                </s-link>
-                              ) : (
-                                <s-text color="subdued">
-                                  {group.kind === "translation_failed"
-                                    ? "Not named"
-                                    : "No order"}
-                                </s-text>
-                              )}
-                            </s-table-cell>
-
-                            <s-table-cell>
-                              <s-stack direction="block" gap="small-500">
-                                <s-text>{exception.message}</s-text>
-                                {/*
-                                 * What has already been tried. Without it, an
-                                 * exception retried four times looks exactly like
-                                 * one nobody has touched — which is why "retry
-                                 * does nothing" is the first thing anyone says
-                                 * about a queue like this.
-                                 */}
-                                {exception.attempts > 0 ? (
-                                  <s-text color="subdued">
-                                    {`Tried ${exception.attempts} ${exception.attempts === 1 ? "time" : "times"}${
-                                      exception.lastAttemptAt
-                                        ? `, last ${formatDateTime(exception.lastAttemptAt)}`
-                                        : ""
-                                    }.`}
-                                  </s-text>
-                                ) : null}
-                              </s-stack>
-                            </s-table-cell>
-
-                            <s-table-cell>
-                              <s-text color="subdued">
-                                {formatDateTime(exception.createdAt)}
-                              </s-text>
-                            </s-table-cell>
-
-                            <s-table-cell>
-                              <s-stack direction="inline" gap="small-500">
-                                {exception.syncHref ? (
-                                  <s-button
-                                    variant="tertiary"
-                                    href={exception.syncHref}
-                                  >
-                                    Open sync
-                                  </s-button>
-                                ) : null}
-                                {exception.orderId && group.retryable ? (
-                                  <Form method="post">
-                                    <input
-                                      type="hidden"
-                                      name="intent"
-                                      value="retry"
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name="orderId"
-                                      value={exception.orderId}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name="id"
-                                      value={exception.id}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name="kind"
-                                      value={exception.kind}
-                                    />
-                                    <s-button
-                                      type="submit"
-                                      variant="tertiary"
-                                      {...(busy ? { disabled: true } : {})}
+                        {group.rows.map((exception) => {
+                          const menuId = `exception-menu-${exception.id}`;
+                          const canRetry = Boolean(
+                            exception.orderId && group.retryable,
+                          );
+                          return (
+                            <s-table-row key={exception.id}>
+                              <s-table-cell>
+                                <s-stack direction="block" gap="none">
+                                  {exception.orderNumber &&
+                                  exception.orderId ? (
+                                    <s-link
+                                      href={`/app/orders/${exception.orderId}`}
                                     >
-                                      Retry
-                                    </s-button>
-                                  </Form>
-                                ) : null}
-                                <Form method="post">
-                                  <input
-                                    type="hidden"
-                                    name="intent"
-                                    value="resolve"
-                                  />
-                                  <input
-                                    type="hidden"
-                                    name="id"
-                                    value={exception.id}
-                                  />
+                                      {exception.orderNumber}
+                                    </s-link>
+                                  ) : exception.campaignId ? (
+                                    <s-link
+                                      href={`/app/sales/${exception.campaignId}/variants`}
+                                    >
+                                      Open campaign
+                                    </s-link>
+                                  ) : exception.subject ? (
+                                    <s-link href={exception.subject.href}>
+                                      {exception.subject.label}
+                                    </s-link>
+                                  ) : (
+                                    <s-text type="strong">
+                                      {group.kind === "translation_failed"
+                                        ? "Not named"
+                                        : "No order"}
+                                    </s-text>
+                                  )}
+                                  <s-text color="subdued">
+                                    {reasonOf(exception.message)}
+                                  </s-text>
+                                  {/*
+                                   * What has already been tried: without it, a
+                                   * row retried four times looks like one
+                                   * nobody has touched.
+                                   */}
+                                  {exception.attempts > 0 ? (
+                                    <s-text color="subdued">
+                                      {`Tried ${exception.attempts} ${exception.attempts === 1 ? "time" : "times"}${
+                                        exception.lastAttemptAt
+                                          ? `, last ${formatListDateTime(exception.lastAttemptAt)}`
+                                          : ""
+                                      }.`}
+                                    </s-text>
+                                  ) : null}
+                                </s-stack>
+                              </s-table-cell>
+
+                              <s-table-cell>
+                                <s-text color="subdued">
+                                  {formatListDateTime(exception.createdAt)}
+                                </s-text>
+                              </s-table-cell>
+
+                              <s-table-cell>
+                                <s-stack
+                                  direction="inline"
+                                  gap="small-300"
+                                  justifyContent="end"
+                                >
                                   <s-button
-                                    type="submit"
-                                    variant="tertiary"
+                                    onClick={() =>
+                                      post({
+                                        intent: "resolve",
+                                        id: exception.id,
+                                      })
+                                    }
                                     {...(busy ? { disabled: true } : {})}
                                   >
                                     Resolve
                                   </s-button>
-                                </Form>
-                                <Form method="post">
-                                  <input
-                                    type="hidden"
-                                    name="intent"
-                                    value="ignore"
-                                  />
-                                  <input
-                                    type="hidden"
-                                    name="id"
-                                    value={exception.id}
-                                  />
                                   <s-button
-                                    type="submit"
-                                    variant="tertiary"
+                                    icon="menu-horizontal"
+                                    accessibilityLabel="More actions"
+                                    command="--toggle"
+                                    commandFor={menuId}
                                     {...(busy ? { disabled: true } : {})}
+                                  />
+                                  <s-menu
+                                    id={menuId}
+                                    accessibilityLabel="More actions"
                                   >
-                                    Ignore
-                                  </s-button>
-                                </Form>
-                              </s-stack>
-                            </s-table-cell>
-                          </s-table-row>
-                        ))}
+                                    {exception.syncHref ? (
+                                      <s-button href={exception.syncHref}>
+                                        Open sync
+                                      </s-button>
+                                    ) : null}
+                                    {canRetry ? (
+                                      <s-button
+                                        onClick={() =>
+                                          post({
+                                            intent: "retry",
+                                            orderId: exception.orderId ?? "",
+                                            id: exception.id,
+                                            kind: exception.kind,
+                                          })
+                                        }
+                                      >
+                                        Retry
+                                      </s-button>
+                                    ) : null}
+                                    <s-button
+                                      onClick={() =>
+                                        post({
+                                          intent: "ignore",
+                                          id: exception.id,
+                                        })
+                                      }
+                                    >
+                                      Ignore
+                                    </s-button>
+                                  </s-menu>
+                                </s-stack>
+                              </s-table-cell>
+                            </s-table-row>
+                          );
+                        })}
                       </s-table-body>
                     </s-table>
+
+                    {group.hasMore ? (
+                      <s-box padding="base">
+                        <s-grid
+                          gridTemplateColumns="1fr auto"
+                          gap="base"
+                          alignItems="center"
+                        >
+                          <s-text color="subdued">
+                            {`Showing ${loaded} of ${count.toLocaleString("en")}`}
+                          </s-text>
+                          {/*
+                           * Paging is per category: the hidden inputs carry
+                           * every other category's current limit unchanged,
+                           * so loading more of this one never resets another.
+                           */}
+                          <Form method="get">
+                            {area ? (
+                              <input
+                                type="hidden"
+                                name="area"
+                                value={area.key}
+                              />
+                            ) : null}
+                            {groups.map((g) => (
+                              <input
+                                key={g.kind}
+                                type="hidden"
+                                name={limitParamFor(g.kind)}
+                                value={
+                                  g.kind === group.kind
+                                    ? group.limit + EXCEPTIONS_PAGE_SIZE
+                                    : g.limit
+                                }
+                              />
+                            ))}
+                            <s-button
+                              type="submit"
+                              {...(busy ? { disabled: true } : {})}
+                            >
+                              Load more
+                            </s-button>
+                          </Form>
+                        </s-grid>
+                      </s-box>
+                    ) : null}
                   </s-stack>
                 </s-section>
               );
-            })}
-          </>
-        )}
+            })
+          )}
 
-        {resolved.length > 0 ? (
-          <s-section heading="Recently closed">
-            <s-stack direction="block" gap="small-300">
-              {resolved.map((exception) => (
-                <s-text key={exception.id} color="subdued">
-                  {`${describeExceptionKind(exception.kind).label}${
-                    exception.orderNumber
-                      ? ` — order ${exception.orderNumber}`
-                      : ""
-                  } — ${formatDateTime(exception.createdAt)}${
-                    exception.resolvedBy === "app"
-                      ? " — cleared automatically once it was fixed"
-                      : ""
-                  }`}
-                </s-text>
-              ))}
-            </s-stack>
-          </s-section>
-        ) : null}
-      </s-stack>
+          {resolved.length > 0 ? (
+            <s-section>
+              <s-stack direction="block" gap="small-300">
+                <s-heading>Recently closed</s-heading>
+                {resolved.map((exception) => (
+                  <s-text key={exception.id} color="subdued">
+                    {`${describeExceptionKind(exception.kind).label}${
+                      exception.orderNumber
+                        ? ` · order ${exception.orderNumber}`
+                        : ""
+                    } · ${formatListDateTime(exception.createdAt)}${
+                      exception.resolvedBy === "app"
+                        ? " · cleared automatically once fixed"
+                        : ""
+                    }`}
+                  </s-text>
+                ))}
+              </s-stack>
+            </s-section>
+          ) : null}
+        </s-stack>
+      </s-query-container>
     </s-page>
   );
 }

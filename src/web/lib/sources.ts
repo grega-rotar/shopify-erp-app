@@ -24,6 +24,8 @@ export const SOURCE_ROUTES = {
   index: "/app/sources",
   new: "/app/sources/new",
   connection: "/app/sources/connection",
+  /** Which sources' new products the AI sorts into product types (§ AI categorization per source). */
+  categorization: "/app/sources/categorization",
   /** New products waiting for a person before they go live (§ Review before publish). */
   review: (sourceId?: string | null) =>
     sourceId
@@ -141,6 +143,8 @@ export function sourceStatus(
   source: Pick<SourceSummary, "enabled" | "health" | "lastRun">,
 ): SourceStatus {
   if (isRunActive(source.lastRun)) return { label: "Running", tone: "info" };
+  if (isRunStale(source.lastRun))
+    return { label: "Stopped responding", tone: "warning" };
   if (!source.enabled) return { label: "Off", tone: "neutral" };
   return {
     label: HEALTH_LABEL[source.health],
@@ -265,10 +269,17 @@ export function filterSources(
   });
 }
 
+/** A run's status in words; a run that died unfinished says so. */
+export function runStatusLabel(
+  run: Pick<Run, "status" | "startedAt" | "queuedAt">,
+): string {
+  return isRunStale(run) ? "Stopped responding" : RUN_STATUS_LABEL[run.status];
+}
+
 /** One line about the last run: its outcome and what it carried. */
 export function describeRun(run: Run | null | undefined): string {
   if (!run) return "Never ran";
-  const parts: string[] = [RUN_STATUS_LABEL[run.status]];
+  const parts: string[] = [runStatusLabel(run)];
   if (run.itemCount !== null && run.itemCount !== undefined) {
     parts.push(
       `${run.itemCount.toLocaleString("en")} ${run.itemCount === 1 ? "item" : "items"}`,
@@ -278,10 +289,39 @@ export function describeRun(run: Run | null | undefined): string {
 }
 
 /** A run is still going, so the page keeps asking. */
-export function isRunActive(
-  run: Pick<Run, "status"> | null | undefined,
+/**
+ * No real run lasts this long: every Shopify call the portal makes times out
+ * in seconds. A run still queued or running after it died with the portal
+ * process (a deploy or a crash), and the portal only closes it when it next
+ * starts or the store's next run begins.
+ */
+export const RUN_STALE_MS = 6 * 60 * 60 * 1000;
+
+/** Said as queued or running, but too old to be either. */
+export function isRunStale(
+  run: Pick<Run, "status" | "startedAt" | "queuedAt"> | null | undefined,
+  now: number = Date.now(),
 ): boolean {
-  return run?.status === "queued" || run?.status === "running";
+  if (run?.status !== "queued" && run?.status !== "running") return false;
+  const since = run.startedAt ?? run.queuedAt;
+  if (!since) return false;
+  const at = new Date(since).getTime();
+  return Number.isFinite(at) && now - at > RUN_STALE_MS;
+}
+
+/**
+ * Queued or running, and young enough to be true. A stale run is not active:
+ * the page stops waiting for it and Run now is offered again, which is also
+ * what makes the portal close the dead run.
+ */
+export function isRunActive(
+  run: Pick<Run, "status" | "startedAt" | "queuedAt"> | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  return (
+    (run?.status === "queued" || run?.status === "running") &&
+    !isRunStale(run, now)
+  );
 }
 
 /** What the header of the Sources page says about all of them at once. */

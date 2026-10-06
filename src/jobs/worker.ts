@@ -37,6 +37,9 @@ import { handleSyncProducts } from "~/jobs/handlers/sync-products";
 import { handleTranslationCoverage } from "~/jobs/handlers/translation-coverage";
 import { handleTranslationProfile } from "~/jobs/handlers/translation-profile";
 import { handleTranslationRemove } from "~/jobs/handlers/translation-remove";
+import { handleProductAutofill } from "~/jobs/handlers/product-autofill";
+import { handleSourceProductAutofill } from "~/jobs/handlers/source-product-autofill";
+import { handleTypeMenuSync } from "~/jobs/handlers/type-menu-sync";
 import { handleTranslationResourceEvent } from "~/jobs/handlers/translation-resource-event";
 import { handleTranslationSync } from "~/jobs/handlers/translation-sync";
 import { withIdempotency } from "~/jobs/with-idempotency";
@@ -220,6 +223,23 @@ async function main(): Promise<void> {
   await boss.work(
     QUEUES.translationResourceEvent,
     withIdempotency(QUEUES.translationResourceEvent, handleTranslationResourceEvent),
+  );
+
+  // Product setup (docs/attributes.md § Store menu): one run per press,
+  // safe to repeat because every step finds what an earlier one made.
+  await boss.work(QUEUES.typeMenuSync, async (jobs) => {
+    for (const job of jobs) await handleTypeMenuSync(job);
+  });
+  // AI autofill (docs/attributes.md § AI autofill): suggestions only, ten
+  // products a pass, every outcome recorded on the product's row.
+  await boss.work(QUEUES.productAutofill, async (jobs) => {
+    for (const job of jobs) await handleProductAutofill(job);
+  });
+  // A source with AI categorization on: its new products are queued as
+  // Shopify reports them created (docs/sources.md § AI categorization).
+  await boss.work(
+    QUEUES.sourceProductAutofill,
+    withIdempotency(QUEUES.sourceProductAutofill, handleSourceProductAutofill),
   );
 
   // One cron entry per cadence, fanned out per shop by the tick handler.
