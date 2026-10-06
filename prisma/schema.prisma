@@ -141,6 +141,7 @@ model Shop {
   saleRuns                SaleRun[]
   catalogProducts         CatalogProduct[]
   catalogVariants         CatalogVariant[]
+  catalogProductDeletions CatalogProductDeletion[]
   catalogPriceLists       CatalogPriceList[]
   attributeSchema         AttributeSchema?
   productTypeAssignments  ProductTypeAssignment[]
@@ -2247,6 +2248,23 @@ model CatalogVariant {
   @@unique([shopId, shopifyVariantId])
   @@index([shopId, sku])
   @@map("catalog_variant")
+}
+
+/// A product Shopify said was deleted (`products/delete`). Webhooks and jobs
+/// arrive out of order, so a `products/update` handled after the delete — or
+/// a bulk read started before it — would otherwise put the product back into
+/// the snapshot. Shopify never reuses a product id, so the row only has to
+/// outlive anything still in flight; each snapshot prunes old ones.
+model CatalogProductDeletion {
+  id               String   @id @default(cuid())
+  shopId           String   @map("shop_id")
+  shopifyProductId String   @map("shopify_product_id")
+  deletedAt        DateTime @default(now()) @map("deleted_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyProductId])
+  @@map("catalog_product_deletion")
 }
 
 /// A Markets price list, as far as a sale needs to know about it: whether it

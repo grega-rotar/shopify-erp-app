@@ -67,6 +67,14 @@ status of a product current between snapshots. Collections and metafields are
 not in that payload and wait for the next snapshot (hourly while a dynamic
 campaign is active or scheduled, nightly otherwise).
 
+`products/delete` removes the product and records it in
+`catalog_product_deletion`. Webhooks arrive late and out of order, so a
+`products/update` handled after the delete is ignored, and a bulk read that
+started before the delete leaves the product out. Both writers take a
+per-product advisory lock, so a delete and an update handled at the same
+moment cannot interleave. Shopify never reuses a product id; each snapshot
+prunes deletions older than 30 days.
+
 `catalog_price_list` records each Markets price list: currency, adjustment,
 and how many **fixed** prices it holds. See _Markets_ below.
 

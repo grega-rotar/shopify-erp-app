@@ -124,6 +124,25 @@ export async function setShopContext(
 const INSERT_CHUNK = 1000;
 
 /**
+ * How long a deleted product is remembered. Longer than a bulk read may run
+ * and than Shopify keeps retrying a webhook, with room to spare.
+ */
+const DELETION_KEPT_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * Serialises the writes to one product's snapshot rows, so a delete and an
+ * update handled at the same moment cannot interleave: whichever commits
+ * second sees what the first one did.
+ */
+async function lockProduct(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  productId: string,
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`catalog:${shopId}:${productId}`}))`;
+}
+
+/**
  * Replaces the shop's catalogue with a fresh read, in one transaction, so a
  * reader never sees half a catalogue. Ids are minted here because `createMany`
  * cannot return them and the variants need their product's.
@@ -179,17 +198,45 @@ export async function replaceCatalogue(
     }
   }
 
-  await prisma.$transaction(
+  return prisma.$transaction(
     async (tx) => {
+      /*
+       * The bulk read can take minutes, and a product deleted while it ran
+       * is still in its JSONL. Leave out every product Shopify has told us
+       * is gone; the deletions themselves are pruned once nothing still in
+       * flight can carry the product.
+       */
+      await tx.catalogProductDeletion.deleteMany({
+        where: {
+          shopId,
+          deletedAt: { lt: new Date(now.getTime() - DELETION_KEPT_MS) },
+        },
+      });
+      const deleted = new Set(
+        (
+          await tx.catalogProductDeletion.findMany({
+            where: { shopId },
+            select: { shopifyProductId: true },
+          })
+        ).map((row) => row.shopifyProductId),
+      );
+      const keptProducts = productRows.filter(
+        (row) => !deleted.has(row.shopifyProductId),
+      );
+      const keptIds = new Set(keptProducts.map((row) => row.id));
+      const keptVariants = variantRows.filter((row) =>
+        keptIds.has(row.productId),
+      );
+
       await tx.catalogProduct.deleteMany({ where: { shopId } });
-      for (let start = 0; start < productRows.length; start += INSERT_CHUNK) {
+      for (let start = 0; start < keptProducts.length; start += INSERT_CHUNK) {
         await tx.catalogProduct.createMany({
-          data: productRows.slice(start, start + INSERT_CHUNK),
+          data: keptProducts.slice(start, start + INSERT_CHUNK),
         });
       }
-      for (let start = 0; start < variantRows.length; start += INSERT_CHUNK) {
+      for (let start = 0; start < keptVariants.length; start += INSERT_CHUNK) {
         await tx.catalogVariant.createMany({
-          data: variantRows.slice(start, start + INSERT_CHUNK),
+          data: keptVariants.slice(start, start + INSERT_CHUNK),
         });
       }
       await tx.shop.update({
@@ -200,11 +247,10 @@ export async function replaceCatalogue(
           catalogueBulkStartedAt: null,
         },
       });
+      return { products: keptProducts.length, variants: keptVariants.length };
     },
     { timeout: 120_000 },
   );
-
-  return { products: productRows.length, variants: variantRows.length };
 }
 
 /** What a `products/update` payload can tell us. Collections and metafields are not in it. */
@@ -280,7 +326,17 @@ export async function applyProductUpdate(
       })
     )?.currencyCode ?? "";
 
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
+    // An update that reaches us after the product's delete is old news.
+    await lockProduct(tx, shopId, update.productId);
+    const deleted = await tx.catalogProductDeletion.findUnique({
+      where: {
+        shopId_shopifyProductId: { shopId, shopifyProductId: update.productId },
+      },
+      select: { id: true },
+    });
+    if (deleted) return { changed: false };
+
     const product = await tx.catalogProduct.upsert({
       where: {
         shopId_shopifyProductId: {
@@ -356,8 +412,8 @@ export async function applyProductUpdate(
         },
       });
     }
+    return { changed: true };
   });
-  return { changed: true };
 }
 
 /** Whether a payload says anything the snapshot does not already hold. */
@@ -413,8 +469,19 @@ export async function removeCatalogueProduct(
   productId: string,
 ): Promise<void> {
   const shopId = await shopIdFor(principal);
-  await prisma.catalogProduct.deleteMany({
-    where: { shopId, shopifyProductId: productId },
+  await prisma.$transaction(async (tx) => {
+    await lockProduct(tx, shopId, productId);
+    // Remembered first, so nothing still in flight can bring it back.
+    await tx.catalogProductDeletion.upsert({
+      where: {
+        shopId_shopifyProductId: { shopId, shopifyProductId: productId },
+      },
+      create: { shopId, shopifyProductId: productId },
+      update: {},
+    });
+    await tx.catalogProduct.deleteMany({
+      where: { shopId, shopifyProductId: productId },
+    });
   });
 }
 
