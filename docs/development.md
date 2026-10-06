@@ -367,6 +367,20 @@ Secrets, on the `Recharge` GitHub environment (the `deploy` job declares
 The `deploy` user must be in the `docker` group, be able to read the checkout,
 and have `curl` available.
 
+Grant that access without touching `data/postgres`. The database directory
+belongs to the container's `postgres` user (uid 70 in the alpine image) with
+mode `0700`; a recursive `chown`/`chmod`/`setfacl` over the checkout takes it
+away, and postgres then fails every connection with `could not open file
+"global/pg_filenode.map": Permission denied` (2026-10-05). Give `deploy` the
+checkout itself and `.env`, not its contents recursively. To repair it:
+
+```bash
+cd /data/stack/apps/recharge-hub
+sudo chown -R 70:70 data/postgres
+sudo chmod 700 data/postgres
+docker compose restart postgres
+```
+
 Dependabot (`.github/dependabot.yml`) opens at most one grouped pull request a
 month each for npm minor/patch updates and for GitHub Actions; they pass through
 `check` like any other pull request.
@@ -444,6 +458,13 @@ shared `/etc/nginx/snippets/ssl-t4a.conf` certificate snippet and proxies to
 the `WEB_PORT` upstream with `X-Forwarded-Proto` set. It adds no frame headers
 of its own because the app emits the Shopify `frame-ancestors` policy per
 request.
+
+`react-router-serve` does not trust `X-Forwarded-Proto`, so the server sees
+`http://` requests while browsers send `Origin: https://…`. React Router
+rejects such actions as cross-site (400 "Bad Request" on every form post), so
+`react-router.config.ts` lists the host of `application_url` in
+`allowedActionOrigins`. Moving the app to another domain means updating
+`shopify.app.toml` before the image is built.
 
 ```bash
 sudo setsebool -P httpd_can_network_connect 1   # SELinux: let nginx reach 127.0.0.1:3192
