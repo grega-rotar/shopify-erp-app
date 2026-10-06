@@ -139,12 +139,43 @@ export async function listAutofills(
   return new Map(rows.map((row) => [row.productId, stateOf(row)]));
 }
 
+/**
+ * Ready suggestions for products that still exist, newest first. A product
+ * deleted in Shopify has left the catalogue snapshot; its suggestion has
+ * nothing to apply to and is not counted.
+ */
+async function readyIdsInCatalogue(principal: Principal): Promise<string[]> {
+  const rows = await prisma.productAutofill.findMany({
+    where: { ...scoped(principal), status: "ready" },
+    select: { productId: true },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (rows.length === 0) return [];
+  const present = await prisma.catalogProduct.findMany({
+    where: {
+      ...scoped(principal),
+      shopifyProductId: { in: rows.map((row) => row.productId) },
+    },
+    select: { shopifyProductId: true },
+  });
+  const ids = new Set(present.map((row) => row.shopifyProductId));
+  return rows.map((row) => row.productId).filter((id) => ids.has(id));
+}
+
 /** Suggestions waiting for a person, for a count on the review page. */
 export async function countReadyAutofills(
   principal: Principal,
 ): Promise<number> {
-  return prisma.productAutofill.count({
-    where: { ...scoped(principal), status: "ready" },
+  return (await readyIdsInCatalogue(principal)).length;
+}
+
+/** A product deleted in Shopify takes its suggestion with it. */
+export async function forgetAutofill(
+  principal: Principal,
+  productId: string,
+): Promise<void> {
+  await prisma.productAutofill.deleteMany({
+    where: { ...scoped(principal), productId },
   });
 }
 
@@ -273,11 +304,5 @@ export async function readyAutofillProductIds(
   principal: Principal,
   limit = 1000,
 ): Promise<string[]> {
-  const rows = await prisma.productAutofill.findMany({
-    where: { ...scoped(principal), status: "ready" },
-    select: { productId: true },
-    orderBy: { updatedAt: "desc" },
-    take: limit,
-  });
-  return rows.map((row) => row.productId);
+  return (await readyIdsInCatalogue(principal)).slice(0, limit);
 }

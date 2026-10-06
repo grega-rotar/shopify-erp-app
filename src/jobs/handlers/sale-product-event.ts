@@ -6,6 +6,7 @@ import {
   loadCatalogueFacts,
   removeCatalogueProduct,
 } from "~/adapters/db/repositories/catalogue.server";
+import { forgetAutofill } from "~/adapters/db/repositories/product-autofill.server";
 import {
   listDynamicActiveCampaigns,
   listLiveVariantsForProduct,
@@ -40,7 +41,7 @@ import { serviceToken } from "~/domain/types";
  *  3. Every active dynamic campaign re-evaluates this product.
  *
  * A deleted product cannot be restored: its rows are released, and the
- * snapshot forgets it.
+ * snapshot and any AI autofill suggestion forget it.
  */
 export async function handleSaleProductEvent(job: Job<unknown>): Promise<void> {
   const { shopDomain, topic, payload } = webhookJobSchema.parse(job.data);
@@ -74,6 +75,7 @@ export async function handleSaleProductEvent(job: Job<unknown>): Promise<void> {
       );
     }
     await removeCatalogueProduct(principal, productId);
+    await forgetAutofill(principal, productId);
     log.info(
       { shop: shopDomain, productId, released: owned.length },
       "Product deleted",

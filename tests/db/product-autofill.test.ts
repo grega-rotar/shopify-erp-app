@@ -54,6 +54,12 @@ describeDatabase("product autofill", () => {
   it("queues once, keeps the suggestion, and closes it once", async () => {
     const tenant = await createTenant("autofill");
     tenants.push(tenant);
+    // Only products still in the catalogue are counted.
+    for (const id of [P1, P2]) {
+      await prisma.catalogProduct.create({
+        data: { shopId: tenant.shopId, shopifyProductId: id, title: id },
+      });
+    }
 
     expect(await queueAutofills(tenant.principal, [P1, P2], "staff")).toEqual([
       P1,

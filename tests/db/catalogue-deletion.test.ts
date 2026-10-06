@@ -7,6 +7,11 @@ import {
   replaceCatalogue,
   type ProductUpdate,
 } from "~/adapters/db/repositories/catalogue.server";
+import {
+  countReadyAutofills,
+  forgetAutofill,
+  readyAutofillProductIds,
+} from "~/adapters/db/repositories/product-autofill.server";
 import type { CatalogueProductRecord } from "~/adapters/shopify/catalogue";
 
 import {
@@ -142,6 +147,33 @@ describeDatabase("catalogue deletion", () => {
     expect(
       await prisma.catalogProductDeletion.count({
         where: { shopId: tenant.shopId },
+      }),
+    ).toBe(0);
+  });
+
+  it("does not count AI suggestions for products no longer in the catalogue", async () => {
+    const tenant = await createTenant("catalogue-deletion-autofill");
+    tenants.push(tenant);
+
+    await applyProductUpdate(tenant.principal, update, new Date());
+    const gone = "gid://shopify/Product/2";
+    for (const id of [productId, gone]) {
+      await prisma.productAutofill.create({
+        data: { shopId: tenant.shopId, productId: id, status: "ready" },
+      });
+    }
+
+    expect(await countReadyAutofills(tenant.principal)).toBe(1);
+    expect(await readyAutofillProductIds(tenant.principal)).toEqual([
+      productId,
+    ]);
+
+    await removeCatalogueProduct(tenant.principal, productId);
+    await forgetAutofill(tenant.principal, productId);
+    expect(await countReadyAutofills(tenant.principal)).toBe(0);
+    expect(
+      await prisma.productAutofill.count({
+        where: { shopId: tenant.shopId, productId },
       }),
     ).toBe(0);
   });
