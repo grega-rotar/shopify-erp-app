@@ -45,3 +45,24 @@ export async function clearAssignedType(
     where: { shop: { domain: shopDomainOf(principal) }, productId },
   });
 }
+
+/** The choices made for these products, with who made each. */
+export async function assignmentsFor(
+  principal: Principal,
+  productIds: readonly string[],
+): Promise<Map<string, { typeId: string; chosenBy: string | null }>> {
+  if (productIds.length === 0) return new Map();
+  const rows = await prisma.productTypeAssignment.findMany({
+    where: {
+      shop: { domain: shopDomainOf(principal) },
+      productId: { in: [...productIds] },
+    },
+    select: { productId: true, typeId: true, chosenBy: true },
+  });
+  return new Map(
+    rows.map((row) => [
+      row.productId,
+      { typeId: row.typeId, chosenBy: row.chosenBy },
+    ]),
+  );
+}

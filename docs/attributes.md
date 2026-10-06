@@ -9,9 +9,11 @@ its tables.
 It is planning data. The product setup screens neither read nor write Shopify:
 the Shopify field key on an attribute names where a metafield definition would
 be created later, and the Shopify category on a type is a note. Turning the
-plan into definitions is a later piece of work, not a setting here. The one
-place the plan meets Shopify is the product page, where a person enters a
-product's values by hand (*On the product page*).
+plan into definitions is a later piece of work, not a setting here. The plan
+meets Shopify in three places: the product page, where a person enters a
+product's values by hand (*On the product page*); AI autofill, which
+suggests them for a person to apply (*AI autofill*); and the store menu,
+made from the type tree when a person asks (*Store menu*).
 
 ## Document
 
@@ -116,7 +118,8 @@ no query that anything needs yet.
 ## Screens
 
 Every hub page opens with the workspace's own navigation — Product types |
-Attributes | Attribute sets | Settings — as links, the current one stated.
+Attributes | Attribute sets | Store menu | Settings — as links, the current
+one stated.
 Product types goes to the bare tree; a type is a dialog over it, named in
 the address while it is open.
 
@@ -127,8 +130,10 @@ the address while it is open.
 | `/app/product-setup/attributes`              | The catalogue: name, format, where used, Shopify field. Search is kept in `?q=`. New attribute is one dialog, complete with options, unit and where to add it; a name opens the same form as a dialog to edit in place, with a two-step delete inside it. |
 | `/app/product-setup/attributes/:attributeId` | The focused editor with a breadcrumb back, the same form as creation plus the flags, the types it is on, and the one delete that reaches everywhere. |
 | `/app/product-setup/sets`                    | Sets with members and where each is attached; new and edit (name, description and which attributes belong, ticking one that is in another set moves it), delete, attach, detach. |
-| `/app/product-setup/settings`                | The checks in their four states, export and import, exceptions single types have made, and starting again. |
-| `/app/product-setup/schema.json`             | The export, fetched by `DownloadButton` so the session token travels with it. |
+| `/app/product-setup/menu`                    | The store menu: a preview of the menu the tree makes, folded to its top level with a chevron per branch and *Expand all* / *Collapse all* (entries link their collections once made), **Make menu** / **Update menu**, the run's progress while it works (live), and the result with a link to the menu in Shopify. |
+| `/app/product-setup/settings`                | The checks in their four states, export and import (CSV and JSON), planning with an AI assistant (the steps and the prompt to copy or download), exceptions single types have made, and starting again. |
+| `/app/product-setup/schema.json`             | The JSON export, fetched by `DownloadButton` so the session token travels with it. |
+| `/app/product-setup/schema.csv`              | The CSV export, fetched the same way; an empty plan is the header row, the template. |
 
 Consequences are stated where the action is taken, in numbers from
 `impact.ts`: a delete confirmation says how many children move up, what
@@ -142,12 +147,46 @@ person asks for it.
 
 ## Import and export
 
-Export writes the stored document as `attributes-YYYY-MM-DD.json`. Import
-reads a file chosen on the settings page, checks it whole on the server
-(shape, then meaning), and replaces the document after a confirmation that
-names what is being replaced. A rejected file changes nothing and the reason
-is shown. Files from the standalone builder import through the translation
-described under *Document*.
+Two formats, one import button. JSON (`product-setup-YYYY-MM-DD.json`) is
+the stored document exactly, the backup. CSV (`product-setup-YYYY-MM-DD.csv`,
+`domain/attributes/csv.ts`) is the same plan as one table for a spreadsheet
+or an AI assistant. Import reads a file chosen on the settings page (a `.csv`
+name, or content that does not start like JSON, is CSV), checks it whole on
+the server, and replaces the document after a confirmation that names what is
+being replaced. A rejected file changes nothing and the reason is shown.
+Files from the standalone builder import through the translation described
+under *Document*.
+
+The CSV has one header (`CSV_COLUMNS`) and one row per thing, the `record`
+column saying which:
+
+| record        | Names                                  | Carries                                                                 |
+| ------------- | -------------------------------------- | ----------------------------------------------------------------------- |
+| `type`        | `type`: the path, `A > B > C`          | `assignable` (empty: yes when it has no children), `shopify_category`   |
+| `set`         | `set`                                  | `description`                                                           |
+| `attribute`   | `attribute`, its `set`                 | `format` (code, or a merchant name such as *Single choice*), `unit`, `level`, `shopify_field`, `required`, `filterable`, `searchable`, `comparable`, `native`, `description` |
+| `option`      | `attribute`                            | `code` (empty: slug of the label), `label_en`, `label_si`; in order      |
+| `attach`      | `type`, and `set` or `attribute`       |                                                                         |
+| `requirement` | `type`, `attribute`                    | `required` yes or no, `description` as the reason                       |
+| `remove`      | `type`, `attribute`                    |                                                                         |
+
+Everything is referenced by name, never by id; ids are made fresh on import.
+A type path creates its ancestors; siblings keep the order of the file.
+Attribute names must be unique in the file. A comma, semicolon or tab
+delimiter and a byte order mark are all read. Every row is read before
+anything is refused, so a rejected file lists each wrong row by number (the
+first twenty), and the built plan is then held to `parseAttributeSchema` like
+any other document. Export then import gives back the same plan.
+
+### Planning with an AI assistant
+
+The settings page explains the round trip — export CSV, paste the prompt
+into Claude with the file and a description of the products, import what
+comes back — and offers the prompt to copy or download
+(`web/lib/attribute-ai-prompt.ts`). The prompt states the columns, record
+kinds, formats and planning rules, and carries the starter plan run through
+the real exporter as its example, so the example always imports. The app
+calls no AI for this; the person carries the file both ways.
 
 ## On the product page
 
@@ -183,10 +222,143 @@ re-reads the plan, the type and the live values, refuses when the type changed
 or a value it changes was changed in Shopify since the page loaded, and logs
 `product.details_edited` (and `product.type_chosen` for a choice).
 
+## Store menu
+
+The type tree as a Shopify navigation menu for the store's header, made on
+request from the **Store menu** page. Nothing in it is AI; it is the tree.
+
+- **The type field.** Each product carries its type and every type above
+  it, top level first, in the product metafield `recharge.product_type_path`
+  (list of single line text) — tags a shopper never sees. Its definition is
+  created at runtime, because the capability that lets automated collections
+  match on it (`smartCollectionCondition`) cannot be set in TOML. A
+  product's type is the one the product page would show (`typeForProduct`:
+  chosen, else category, else Shopify product type); a product two types
+  claim keeps what it holds. Only changes are written (`typeFieldChanges`,
+  against the catalogue's copy of the field), so a type moved in the tree
+  rewrites the products beneath it, and a product that lost its type has the
+  field deleted. Choosing a type on the product page writes the field at
+  once when the menu exists; clearing a choice waits for the next update.
+- **Collections.** Every type gets an automated collection, titled as the
+  type, whose one conditions source takes the products whose path includes
+  the type (`metafieldStringList`, `INCLUDES`, one value). One value per
+  collection keeps every branch, however large, inside Shopify's limit of 60
+  condition values per source — the first version listed every type beneath
+  a parent and broke on large branches. A collection made before is renamed
+  and its source replaced; one a merchant deleted is made again; only new
+  ones are published to the online store (the publication whose catalog
+  title is *Online Store*). Description, image and handle are the
+  merchant's.
+- **The first version's field.** `recharge.product_type_id` (one type id
+  per product) is deleted with its values at the end of a run, once no
+  collection matches on it; a refusal is logged, not shown.
+- **The menu.** `menuTree`: the tree in sibling order, starting below a
+  single root, three levels deep (Shopify's limit); a deeper type is not an
+  entry but its products are in its level-3 ancestor's collection. The menu
+  is titled *Product types*, handle `product-types`; the one this app made is
+  updated, else one with that handle is taken over, else one is created. Its
+  items are replaced whole on every run.
+
+The run is the `type-menu-sync` job (`jobs/handlers/type-menu-sync.ts`,
+Shopify calls in `adapters/shopify/type-menu.ts`): type field, then
+collections, then menu, its phase and counts on the shop's
+`product_type_menu` row, which also remembers the definition, the menu and
+`{ typeId: { collectionId, sourceId } }`. A product the catalogue still holds
+but Shopify has deleted is skipped and counted in the result, not a failure
+(Shopify refuses a whole `metafieldsSet` call for one missing owner, so a
+refused batch is retried product by product). A run that has written no progress for 15 minutes is closed as failed the
+next time the page reads it (a live run writes every few seconds), and a run
+whose job cannot be queued is failed at once, so *Making the menu* never
+spins for ever. A press while a run is moving is
+refused (a run silent for 30 minutes no longer blocks). Each collection is
+recorded as soon as it exists, so a failure part way never duplicates one.
+A refusal Shopify explains — a permission not yet approved, a rejected
+input — is shown on the page and not retried; anything else is retried by
+the queue. The finished run logs `attribute_schema.menu_made`.
+
+## AI autofill
+
+The export portal's AI suggests a product's type and the values of its
+empty attributes; a person reviews the suggestion and applies what they
+keep. Nothing the AI says reaches Shopify, or `product_type_assignment`,
+until it is applied. The AI is the portal's (its categorizer, Claude
+Haiku); this app only describes its own catalogue model to it and checks
+what comes back (docs/sources.md § AI autofill).
+
+**Asking.** *Autofill with AI* on a product's **Attributes** tab; *Autofill
+with AI* on the products selected in **Products**; *Autofill* per row and
+*Autofill selected* on **Sources › Review**; or, for a source switched on
+under **Sources › AI categorization**, each new product as it arrives
+(docs/sources.md § AI categorization per source). Each marks
+the products `queued` on `product_autofill` and hands them to the
+`product-autofill` job (`jobs/handlers/product-autofill.ts`), ten per pass,
+the rest to a fresh job; at most 250 per request, and a product already
+being worked on is not asked twice. Per product (`suggestAutofill`,
+`adapters/products/autofill.server.ts`):
+
+1. **Type.** A product that already has a type — chosen by a person, or
+   matched by category or Shopify product type as the product page matches
+   it — keeps it (`typeOrigin: kept`). The others are categorized in
+   batches of ten against the plan's assignable types, each sent as its id
+   and full path (`All products > Windsurf > Sails > Wave sails`); the
+   answer is used only if it names one of them, with the portal's
+   confidence (0–1) and one-sentence reason. "No type fits" is an answer,
+   not a failure.
+2. **Attributes.** For the type, the fields the product page would show
+   (`readAttributeValues`), and of those only the writable ones that are
+   empty — a variant attribute while any variant is empty
+   (`attributesToFill`, `domain/products/autofill.ts`). Each is described by
+   its format (text, integer, decimal, boolean, date, choice, choices,
+   measurement), unit, options by code and label, and level. Nothing is
+   asked when nothing is empty.
+3. **Checking.** An answer becomes a suggestion only where a person's entry
+   would be accepted in its place (`suggestedValues`): a choice is an option
+   code, or a label mapped to its code; a number is read off the front of
+   the text (`4,2 kg` → `4.2`), never a range; a variant value names a
+   variant the product has; a field that has a value, a blocked field, an
+   unknown attribute and a repeat are dropped. What is left is stored with
+   its display text (labels, unit).
+
+A product whose suggestion will never come — its job died with the worker
+or never ran — is failed when it is next read (`failStaleAutofills`: running
+for 30 minutes, or queued for four hours), so nothing shows *Autofilling…*
+for ever; if the job cannot be queued at all, the products are failed at
+once. A failure is recorded on the product it concerns (`failed`, with the
+portal's words for an AI failure, this app's for anything else): the
+portal not connected, a product deleted, a refused call. The pages watch
+`queued` and `running` rows and update as each finishes.
+
+**Reviewing.** The product's Attributes tab shows the suggestion above the
+fields: the suggested type with its confidence and reason, and a table of
+the suggested values (attribute, variant, value), every line ticked; a
+person unticks what is wrong and presses *Apply selected*, or *Discard*.
+Apply is disabled while the page has unsaved edits. On **Sources ›
+Review**, the *Type and attributes* column says what is waiting
+(`Suggested: Type and 4 values`, with the confidence), links to the
+product to review it, and *Apply* / *Apply suggestions* applies everything
+suggested for those products (25 at most per press). **Products** shows
+the same under each title (*AI suggestion · Type and 2 values*,
+*Autofilling…*, *Autofill failed*), has an *AI review* view of the products
+whose suggestions wait, and the same *Apply suggestions* / *Autofill with
+AI* for the products selected.
+
+**Applying** (`applyAutofill`) goes through the paths a person's own edits
+take: the kept type through `chooseProductType` (the assignment, recorded
+as chosen by the person who applied it, and the store menu field), then the
+kept values through `attributeChanges` and `metafieldsSet`, filling only
+fields that are still empty — a value someone entered since wins. Values
+are written only if the product's type is the one they were suggested for;
+a person who rejected the type keeps their attributes untouched. The row
+becomes `applied` (or `discarded`) once, so a second tab cannot apply what
+the first discarded, and `product.autofill_applied` is logged.
+
 ## Known limits
 
 - No undo. Every destructive change is behind a confirmation instead, and the
   export is the backup.
+- Import replaces the whole plan; there is no merge. A CSV type name that
+  contains `>` is read as a path, and two attributes with the same name
+  export but do not import until one is renamed.
 - No sharing of one option list between two attributes from the UI; each
   select attribute owns its list. Lists shared through import keep working and
   fork on first edit.
@@ -199,5 +371,17 @@ or a value it changes was changed in Shopify since the page loaded, and logs
 - Nothing is created in Shopify from the plan yet: no metafield definitions,
   so values written without one are untyped metafields until a definition
   exists. Values are entered one product at a time; there is no bulk entry.
+- A source's new products are autofilled as they arrive only when the
+  source tags them (a source holding new products for review). Suggestions
+  are not refreshed when the product or the plan changes afterwards; asking
+  again replaces them. Variant
+  values come from the variant's title and options, so a product with more
+  than 100 variants is only partly filled.
+- The store menu is made on request, not kept in step: after the tree or
+  products' types change, *Update menu* brings it up to date. Edits made to
+  the menu in Shopify are replaced by the next update. Collections of types
+  deleted from the plan stay in Shopify for the merchant to remove. A
+  product type matched only by a category's full path is not matched by the
+  menu run, which knows only the category's name.
 - A save of more than 25 values is several `metafieldsSet` calls; a refusal
   part way leaves the earlier batches written; a reload shows which.

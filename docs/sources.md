@@ -158,6 +158,8 @@ Accept: application/json
 | `POST`   | `/sources/:id/runs`       | `{ run: Run }` (202)            | Starts a run. May refuse (409) while one is running.         |
 | `GET`    | `/sources/:id/runs?limit` | `{ runs: Run[] }`               | Newest first.                                                |
 | `GET`    | `/runs/:runId`            | `{ run: Run, log?: LogLine[] }` |                                                              |
+| `POST`   | `/ai/categorize`          | `{ results: CategoryResult[] }` | AI autofill: one of the caller's categories per product.     |
+| `POST`   | `/ai/extract-attributes`  | `{ values: AttributeValue[] }`  | AI autofill: the caller's attributes, read from one product. |
 
 Refusals are `{ error: { code?, message? }, errors?: [{ field, message }] }`.
 `errors` rides on a 422 (or 400) and names the field's `key`; the editor
@@ -241,6 +243,26 @@ The API key is never logged, never in an error, never in the audit trail.
 The audit trail records which fields of a source changed, never their
 values, because a value may be a secret.
 
+### A run that never finishes
+
+The portal runs a source in its own process and records the run as
+`running` until it ends. A run killed with the process (a deploy, a crash)
+used to stay `running` until the store's next run started — and this app
+disables *Run now* while a run is going, so nothing ever started one. Two
+guards now close it:
+
+- **Portal:** at startup it marks every run still `running` failed
+  ("Interrupted — the portal restarted during this run"), and the same for
+  its AI categorization runs (`failInterruptedRuns`,
+  `failInterruptedCategorizationRuns`). A single API instance is assumed,
+  as for its per-store lock.
+- **This app:** a run still queued or running six hours after it started
+  is *stale* (`isRunStale`, `web/lib/sources.ts`): it is shown as *Stopped
+  responding*, the page stops polling for it, and *Run now* is offered
+  again — and starting a run is what makes the portal close the dead one.
+  No real run comes near six hours; every Shopify call the portal makes
+  times out in thirty seconds.
+
 ## Screens
 
 ```text
@@ -253,6 +275,8 @@ Sources            /app/sources                      every source, how it is doi
                                                      Turn off/on, Open in portal, Delete
     Runs           /app/sources/:sourceId/runs       every run the portal remembers
     Run            /app/sources/:sourceId/runs/:runId  what happened and the log
+  AI categorization /app/sources/categorization      which sources' new products the AI
+                                                     sorts into product types
   Connection       /app/sources/connection           the API key (store owner only);
                                                      also linked from Settings
 ```
@@ -362,6 +386,87 @@ deliberately this app's: the review happens here, next to the translations,
 and the portal only has to leave `status` alone. The Sources list and each
 source's page say how many products are waiting.
 
+## AI autofill
+
+The portal has an AI categorizer (Claude Haiku) that sorts its catalogue
+into category sets. The same model, with this app's own catalogue model
+handed to it per call, is what suggests a product's type and attribute
+values here (docs/attributes.md § AI autofill). Two calls on the same key
+and shop binding as everything else; both are stateless on the portal —
+nothing is stored and nothing is written to the store; only the token
+usage is logged there (`aiAnalytics`, operation `sources-api:<connection>`).
+
+```ts
+AiProduct      { code, shopifyProductId, name, vendor?, productType?, category?, tags?,
+                 description?, options?, variants?: [{ id, title, sku?, options? }] }
+POST /ai/categorize
+  body         { products: AiProduct[] (1–50), categories: [{ id, label }] (1–2000) }
+  CategoryResult { code, categoryId: string | null, confidence: number | null, reason: string | null }
+POST /ai/extract-attributes
+  body         { product: AiProduct, attributes: Attribute[] (1–200) }
+  Attribute    { id, name, description?, format, unit?, options?: [{ code, label }],
+                 level: product | variant }
+               format ∈ text | integer | decimal | boolean | date | choice | choices | measurement
+  AttributeValue { attributeId, variantId: string | null, value: string | string[] }
+```
+
+- `code` is echoed back so results match products; this app sends the
+  product GID. `categorize` answers one result per product sent, in order;
+  `categoryId` is null when none of the categories fits, and is never one
+  that was not sent. A label is the category's full path joined with
+  ` > `.
+- `extract-attributes` answers only what the product's data settles; an
+  attribute it cannot tell is absent. A `choice` value is one option code,
+  `choices` a list of codes, a number is digits in the attribute's unit,
+  a boolean `"true"`/`"false"`, a date `YYYY-MM-DD`. A `variant` attribute
+  has one entry per variant it can tell, by the variant id sent.
+- **The portal adds what it knows.** For a product it created in the
+  store (found through its `shopify_product_map` by `shopifyProductId`), it
+  adds the supplier's own category, tags and description and its own
+  category labels to what the model reads. The store's data alone is
+  enough; this only adds evidence.
+- Refusals: 422 `invalid` with `errors[].field` for a malformed request,
+  503 `ai_unavailable` when the portal has no model key, 502 `ai_failed`
+  when the model fails or declines. For a 502 or 503 this app shows the
+  portal's own message, which is written for a merchant.
+- The request body is at most 100 kB (the portal's JSON limit): this app
+  sends ten products per categorize call with descriptions clipped to
+  1,200 characters, and one product per extraction.
+- This app checks every answer again before showing it (§ AI autofill in
+  docs/attributes.md); the portal's checks only keep malformed answers
+  from leaving it.
+
+The portal's side is `t4a-partner-portal-api/docs/sources-api-ai.md`,
+`src/services/ai/productAutofill.service.js`, and its smoke test
+`scripts/sources-api-ai-smoke.js`.
+
+## AI categorization per source
+
+Whether a source's new products are put to AI autofill as they arrive is
+this app's setting, not the portal's: it is about this app's product types.
+`source_autofill` holds one row per shop and portal source id (`enabled`,
+`fillAttributes`); no row is off.
+
+- **Where.** **Sources › AI categorization** (`/app/sources/categorization`,
+  also in the Sources header) lists every source with a switch and, while
+  on, what to fill — *Product type and attributes* or *Product type only* —
+  each row saved as it changes. It opens with what the feature needs (the
+  portal connected; product types to sort into, and how many have
+  attributes) and how many suggestions wait on Review. Each source's page
+  has the same setting as a card in its sidebar.
+- **When.** products/create fans out to `source-product-autofill`
+  (`jobs/handlers/source-product-autofill.ts`, guarded by webhook id). A
+  product carrying `portal-source:<id>` whose source is on is queued with
+  `requestAutofill`, recorded as requested by `source:<id>`, with the
+  source's choice of what to fill; the suggestion waits for review like
+  every other (docs/attributes.md § AI autofill). A source that is off, a
+  product without the tag, or a portal that cannot be asked is passed over
+  quietly.
+- **Which products.** Only products the portal tags with their source,
+  which today are those a source holds for review. A source that publishes
+  straight away gives no tag, so its products are autofilled from Products
+  or a product page instead. The page says so.
+
 ## Required scopes
 
 `write_products` (already held) for approving a product under review.
@@ -372,7 +477,9 @@ portal has already published the product to its channels.
 ## Known limits
 
 - Not yet run against the real Recharge store: the portal side is verified
-  by its smoke test with Shopify stubbed (`docs/project-status.md` T-27).
+  by its smoke tests with Shopify and the model stubbed
+  (`docs/project-status.md` T-27). The AI calls have never answered from
+  the real model.
 - The portal must be installed on the store as well, so the store has two
   Shopify installs. Feeding the portal from this app instead (so only this
   app is installed) would need an ingestion mode in the portal that other

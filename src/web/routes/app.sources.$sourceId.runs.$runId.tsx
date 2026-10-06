@@ -15,6 +15,8 @@ import {
   RUN_STATUS_LABEL,
   SOURCE_ROUTES,
   isRunActive,
+  isRunStale,
+  runStatusLabel,
   runStatusTone,
 } from "~/web/lib/sources";
 import { readPortal } from "~/web/lib/sources.server";
@@ -110,13 +112,21 @@ export default function RunPage() {
             <SettingRow
               label="Status"
               summary={
-                run.message && run.status !== "failed"
-                  ? run.message
-                  : RUN_STATUS_LABEL[run.status]
+                isRunStale(run)
+                  ? "The run stopped without finishing in the export portal, most likely because the portal restarted. Run the source again."
+                  : run.message && run.status !== "failed"
+                    ? run.message
+                    : RUN_STATUS_LABEL[run.status]
               }
               action={
-                <s-badge {...(tone ? { tone } : {})}>
-                  {RUN_STATUS_LABEL[run.status]}
+                <s-badge
+                  {...(isRunStale(run)
+                    ? { tone: "warning" as const }
+                    : tone
+                      ? { tone }
+                      : {})}
+                >
+                  {runStatusLabel(run)}
                 </s-badge>
               }
             />

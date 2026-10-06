@@ -5,7 +5,9 @@ import {
   API_PREFIX,
   errorReplySchema,
   replies,
+  type CategorizeRequest,
   type Connection,
+  type ExtractAttributesRequest,
   type Run,
   type Source,
   type SourceCreate,
@@ -108,6 +110,28 @@ export class ExportPortalClient {
         replies.runs,
       )
     ).runs;
+  }
+
+  /** One product type per product, or none; nothing is stored or written. */
+  async categorize(
+    input: CategorizeRequest,
+  ): Promise<z.infer<typeof replies.categorize>["results"]> {
+    return (await this.call("POST", "/ai/categorize", input, replies.categorize))
+      .results;
+  }
+
+  /** Values for the attributes described, read from one product's data. */
+  async extractAttributes(
+    input: ExtractAttributesRequest,
+  ): Promise<z.infer<typeof replies.extractAttributes>["values"]> {
+    return (
+      await this.call(
+        "POST",
+        "/ai/extract-attributes",
+        input,
+        replies.extractAttributes,
+      )
+    ).values;
   }
 
   getRun(runId: string): Promise<z.infer<typeof replies.runDetail>> {

@@ -191,8 +191,73 @@ export const connectionSchema = z.object({
 export type Connection = z.infer<typeof connectionSchema>;
 
 /** Reply envelopes, one per endpoint. */
+/**
+ * AI autofill (docs/sources.md § AI autofill): the portal's categorizer and
+ * attribute reader, run against this app's product types and attributes.
+ */
+export const categorizeReplySchema = z.object({
+  results: z.array(
+    z.object({
+      code: z.string(),
+      categoryId: z.string().nullable(),
+      confidence: z.number().min(0).max(1).nullable(),
+      reason: z.string().nullable(),
+    }),
+  ),
+});
+
+export const extractAttributesReplySchema = z.object({
+  values: z.array(
+    z.object({
+      attributeId: z.string(),
+      variantId: z.string().nullable(),
+      value: z.union([z.string(), z.array(z.string())]),
+    }),
+  ),
+});
+
+/** A product as the portal's AI reads it. `code` comes back on each result. */
+export interface AiProduct {
+  code: string;
+  /** Lets the portal add its own supplier data for a product it created. */
+  shopifyProductId: string;
+  name: string;
+  vendor?: string;
+  productType?: string;
+  category?: string;
+  tags?: string[];
+  description?: string;
+  options?: string[];
+  variants?: Array<{
+    id: string;
+    title: string;
+    sku?: string;
+    options?: Array<{ name: string; value: string }>;
+  }>;
+}
+
+export interface CategorizeRequest {
+  products: AiProduct[];
+  categories: Array<{ id: string; label: string }>;
+}
+
+export interface ExtractAttributesRequest {
+  product: AiProduct;
+  attributes: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    format: string;
+    unit?: string;
+    options?: Array<{ code: string; label: string }>;
+    level: "product" | "variant";
+  }>;
+}
+
 export const replies = {
   connection: connectionSchema,
+  categorize: categorizeReplySchema,
+  extractAttributes: extractAttributesReplySchema,
   sourceTypes: z.object({ types: z.array(sourceTypeSchema) }),
   sources: z.object({ sources: z.array(sourceSummarySchema) }),
   source: z.object({ source: sourceSchema }),

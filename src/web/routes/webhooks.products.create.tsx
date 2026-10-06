@@ -7,6 +7,12 @@ import { receiveWebhook } from "~/web/lib/webhook.server";
  * products/create. A new product is translated into every language with
  * automatic translation on (docs/translations.md § Automatic translation).
  * Sale campaigns learn of it through the products/update that follows.
+ * A product an export portal source created is put to AI autofill when
+ * that source has AI categorization on (docs/sources.md § AI
+ * categorization per source).
  */
 export const action = ({ request }: ActionFunctionArgs) =>
-  receiveWebhook(request, QUEUES.translationResourceEvent);
+  receiveWebhook(request, [
+    QUEUES.translationResourceEvent,
+    QUEUES.sourceProductAutofill,
+  ]);

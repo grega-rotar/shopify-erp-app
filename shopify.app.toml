@@ -114,7 +114,10 @@ api_version = "2026-07"
 # `read_markets` shows which markets a language is available in, and
 # `read_content`, `read_online_store_pages` and `read_online_store_navigation`
 # are for the editor's search only (articles, blogs, pages, menus by title).
-scopes = "read_products,write_products,read_inventory,write_inventory,read_locations,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,read_discounts,read_locales,write_locales,read_translations,write_translations,read_markets,read_content,read_online_store_pages,read_online_store_navigation"
+# Store menu (docs/attributes.md § Store menu): `write_online_store_navigation`
+# makes the menu from the product type tree, and `read_publications` /
+# `write_publications` publish its collections to the online store.
+scopes = "read_products,write_products,read_inventory,write_inventory,read_locations,read_orders,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,read_discounts,read_locales,write_locales,read_translations,write_translations,read_markets,read_content,read_online_store_pages,read_online_store_navigation,write_online_store_navigation,read_publications,write_publications"
 use_legacy_install_flow = false
 
 [auth]

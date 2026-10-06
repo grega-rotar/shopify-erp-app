@@ -120,6 +120,16 @@ creating them as drafts tagged `awaiting-review` and `portal-source:<id>`,
 and never writing `status` on a later update. Not yet tried against the
 store.
 
+**AI autofill** (2026-10-06): both sides built — the portal's
+`POST /api/v1/ai/categorize` and `/ai/extract-attributes`
+(`docs/sources.md` § AI autofill; its smoke test stubs the model), and
+here the suggestions, the review on the product page and on Sources ›
+Review, and applying (`docs/attributes.md` § AI autofill). To go live: the
+portal API deployed with the two routes (it already has
+`ANTHROPIC_API_KEY`), then one product autofilled and its suggestion
+checked by hand before a batch. Prompt quality against the real catalogue
+is untested.
+
 ### T-05/T-06 — Shipping and discounts: representable, not yet configured
 
 Resolved as a mechanism, live-verified on 2026-08-26

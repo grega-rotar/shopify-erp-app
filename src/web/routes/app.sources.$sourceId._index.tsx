@@ -10,6 +10,7 @@ import {
 } from "react-router";
 
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
+import { getSourceAutofill } from "~/adapters/db/repositories/source-autofill.server";
 import {
   portalFailure,
   portalFor,
@@ -24,6 +25,7 @@ import {
 } from "~/domain/export-portal/fields";
 import { reviewQuery } from "~/domain/export-portal/review";
 import { ConfirmModal } from "~/web/components/confirm-modal";
+import { SourceAutofillCard } from "~/web/components/source-autofill-card";
 import { EditableCard } from "~/web/components/source-editor";
 import {
   AttentionCard,
@@ -68,7 +70,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const principal = principalFromSession(session);
   const sourceId = sourceIdFrom(params);
   const url = new URL(request.url);
-  const [portal, awaitingReview] = await Promise.all([
+  const [portal, awaitingReview, autofill] = await Promise.all([
     readPortal(principal, async (client) => {
       const [source, runs] = await Promise.all([
         client.getSource(sourceId),
@@ -79,11 +81,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Drafts this source created that nobody has approved yet
     // (docs/sources.md § Review before publish).
     countReviewProducts(admin, reviewQuery({ sourceId })).catch(() => 0),
+    getSourceAutofill(principal, sourceId),
   ]);
   return {
     sourceId,
     portal,
     awaitingReview,
+    autofill,
     note: url.searchParams.get("note"),
   };
 };
@@ -230,7 +234,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function SourcePage() {
-  const { sourceId, portal, awaitingReview, note } =
+  const { sourceId, portal, awaitingReview, autofill, note } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
@@ -284,6 +288,7 @@ export default function SourcePage() {
       source={portal.data.source}
       runs={portal.data.runs}
       awaitingReview={awaitingReview}
+      autofill={autofill}
       note={note}
       fetcher={fetcher}
     />
@@ -294,12 +299,14 @@ function SourceOverview({
   source,
   runs,
   awaitingReview,
+  autofill,
   note,
   fetcher,
 }: {
   source: Source;
   runs: Run[];
   awaitingReview: number;
+  autofill: { enabled: boolean; fillAttributes: boolean };
   note: string | null;
   fetcher: ReturnType<typeof useFetcher<typeof action>>;
 }) {
@@ -540,6 +547,7 @@ function SourceOverview({
         <s-stack direction="block" gap="base">
           <StatusCard source={source} runs={runs} running={running} />
           <AttentionCard source={source} />
+          <SourceAutofillCard sourceId={source.id} setting={autofill} />
         </s-stack>
       </div>
     </s-page>

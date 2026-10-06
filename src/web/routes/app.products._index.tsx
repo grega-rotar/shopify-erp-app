@@ -1,13 +1,22 @@
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  useFetcher,
   useLoaderData,
   useNavigate,
   useNavigation,
   useSearchParams,
+  type ActionFunctionArgs,
   type HeadersFunction,
   type LoaderFunctionArgs,
 } from "react-router";
+
+import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
+import {
+  listAutofills,
+  readyAutofillProductIds,
+} from "~/adapters/db/repositories/product-autofill.server";
+import { autofillAvailability } from "~/adapters/products/autofill.server";
 
 import {
   PRODUCT_STATUS_FILTERS,
@@ -33,9 +42,21 @@ import {
   ProductViewOptions,
   useProductColumns,
 } from "~/web/components/product-list-view";
+import { BulkBar, useSelection } from "~/web/components/bulk-selection";
+import {
+  autofillSummary,
+  isAutofillWorking,
+  type AutofillView,
+} from "~/web/lib/autofill";
+import { autofillListAction } from "~/web/lib/autofill-actions.server";
+import { autofillView } from "~/web/lib/autofill.server";
 import { formatListDateTime } from "~/web/lib/datetime";
+import { useLiveRevalidation } from "~/web/lib/live";
 import { formatMoney } from "~/web/lib/money";
-import { principalFromSession } from "~/web/lib/principal.server";
+import {
+  actorFromSession,
+  principalFromSession,
+} from "~/web/lib/principal.server";
 import { STATUS_LABEL, productPath } from "~/web/lib/product-workspace";
 
 /**
@@ -79,19 +100,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1,
   );
 
+  // The AI review view: products whose autofill suggestions wait for a
+  // person (docs/attributes.md § AI autofill).
+  const review = url.searchParams.get("view") === "review";
+  const [readyIds, { schema }, autofillReady] = await Promise.all([
+    readyAutofillProductIds(principal),
+    getAttributeSchema(principal),
+    autofillAvailability(principal),
+  ]);
+
   const [result, facetOptions] = await Promise.all([
     listCatalogueProducts(principal, {
       q,
-      status,
-      hideArchived,
+      status: review ? "all" : status,
+      hideArchived: review ? false : hideArchived,
       filters,
       sort,
       page,
       pageSize: PAGE_SIZE,
+      ...(review ? { productIds: readyIds } : {}),
     }),
     catalogueFacetOptions(principal),
   ]);
+  const autofills = await listAutofills(
+    principal,
+    result.rows.map((row) => row.productId),
+  );
   return {
+    review,
+    reviewCount: readyIds.length,
+    autofillAvailable: autofillReady.ok,
     q,
     status,
     hideArchived,
@@ -105,8 +143,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     rows: result.rows.map((row) => ({
       ...row,
       updatedAt: row.updatedAt?.toISOString() ?? null,
+      autofill: autofillView(schema, autofills.get(row.productId)),
     })),
   };
+};
+
+/** Autofill and apply on the selected products, as on Sources › Review. */
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session, admin } = await authenticate.admin(request);
+  const formData = await request.formData();
+  const ids = String(formData.get("ids") ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.startsWith("gid://shopify/Product/"));
+  if (ids.length === 0) return { ok: false, message: "No products chosen." };
+  return (
+    (await autofillListAction({
+      admin,
+      principal: principalFromSession(session),
+      actor: actorFromSession(session),
+      intent: String(formData.get("intent") ?? ""),
+      ids,
+    })) ?? { ok: false, message: "Unknown action." }
+  );
 };
 
 const FILTER_LABEL: Record<ProductStatusFilter, string> = {
@@ -116,7 +175,24 @@ const FILTER_LABEL: Record<ProductStatusFilter, string> = {
   archived: "Archived",
 };
 
-type ListRow = Omit<ProductListRow, "updatedAt"> & { updatedAt: string | null };
+type ListRow = Omit<ProductListRow, "updatedAt"> & {
+  updatedAt: string | null;
+  autofill: AutofillView | null;
+};
+
+/** What AI autofill holds for a row, under its title. */
+function AutofillBadge({ view }: { view: AutofillView | null }) {
+  if (!view) return null;
+  if (isAutofillWorking(view))
+    return <s-text color="subdued">AI is looking at it…</s-text>;
+  if (view.status === "ready")
+    return (
+      <s-text color="subdued">{`AI suggestion: ${autofillSummary(view)}`}</s-text>
+    );
+  if (view.status === "failed")
+    return <s-text tone="critical">AI suggestion failed</s-text>;
+  return null;
+}
 
 function priceText(row: ListRow): string {
   if (row.minPriceMinor === null || !row.currency) return "—";
@@ -206,7 +282,34 @@ export default function Products() {
     total,
     rows,
     snapshotAt,
+    review,
+    reviewCount,
+    autofillAvailable,
   } = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<typeof action>();
+  const acting = fetcher.state !== "idle";
+  const result = fetcher.data;
+  const ids = useMemo(() => rows.map((row) => row.productId), [rows]);
+  const selection = useSelection(ids);
+  const readyById = useMemo(
+    () =>
+      new Set(
+        rows
+          .filter((row) => row.autofill?.status === "ready")
+          .map((row) => row.productId),
+      ),
+    [rows],
+  );
+  useLiveRevalidation({
+    active: rows.some((row) => isAutofillWorking(row.autofill)),
+  });
+  useEffect(() => {
+    if (!result?.ok) return;
+    if (typeof shopify !== "undefined") shopify.toast.show(result.message);
+    selection.clear();
+  }, [result]);
+  const act = (intent: string, chosen: readonly string[]) =>
+    void fetcher.submit({ intent, ids: chosen.join(",") }, { method: "post" });
   const [columns, setColumns] = useProductColumns();
   const visibleColumns = columns
     .filter((column) => column.visible)
@@ -242,10 +345,14 @@ export default function Products() {
     return () => clearTimeout(timer);
   }, [search, q, idle]);
 
+  // In the AI review view a product opens on its suggestion.
   const open = (productId: string) => {
-    const path = productPath(productId);
+    const path = productPath(productId, review ? "attributes" : undefined);
+    const joiner = path.includes("?") ? "&" : "?";
     void navigate(
-      listQuery ? `${path}?list=${encodeURIComponent(`?${listQuery}`)}` : path,
+      listQuery
+        ? `${path}${joiner}list=${encodeURIComponent(`?${listQuery}`)}`
+        : path,
     );
   };
   const loading =
@@ -254,14 +361,23 @@ export default function Products() {
 
   return (
     <s-page heading="Products" inlineSize="large">
+      {result && !result.ok ? (
+        <s-banner tone="critical" heading="That did not work">
+          <s-paragraph>{result.message}</s-paragraph>
+        </s-banner>
+      ) : null}
       <s-section padding="none" accessibilityLabel="Products">
         <s-stack direction="block" gap="none">
-          <s-box padding="small-200">
-            <s-stack direction="block" gap="small-300">
-              <s-stack direction="inline" gap="small-400">
+          <s-box
+            paddingInline="base"
+            paddingBlockStart="base"
+            paddingBlockEnd="small-200"
+          >
+            <s-stack direction="block" gap="base">
+              <s-stack direction="inline" gap="small-300" alignItems="center">
                 {(Object.keys(FILTER_LABEL) as ProductStatusFilter[]).map(
                   (key) =>
-                    key === status ? (
+                    key === status && !review ? (
                       <s-button
                         key={key}
                         variant="secondary"
@@ -274,13 +390,36 @@ export default function Products() {
                         key={key}
                         variant="tertiary"
                         onClick={() =>
-                          go({ status: key === "all" ? null : key, page: null })
+                          go({
+                            status: key === "all" ? null : key,
+                            view: null,
+                            page: null,
+                          })
                         }
                       >
                         {FILTER_LABEL[key]}
                       </s-button>
                     ),
                 )}
+                {reviewCount > 0 || review ? (
+                  review ? (
+                    <s-button
+                      variant="secondary"
+                      accessibilityLabel="AI review, current view"
+                    >
+                      {`AI review (${reviewCount})`}
+                    </s-button>
+                  ) : (
+                    <s-button
+                      variant="tertiary"
+                      onClick={() =>
+                        go({ view: "review", status: null, page: null })
+                      }
+                    >
+                      {`AI review (${reviewCount})`}
+                    </s-button>
+                  )
+                ) : null}
               </s-stack>
               <s-grid
                 gridTemplateColumns="1fr auto"
@@ -315,6 +454,13 @@ export default function Products() {
                   onColumnsChange={setColumns}
                 />
               </s-grid>
+              {review ? (
+                <s-text color="subdued">
+                  Products whose AI suggestion waits for a person. Open one to
+                  check it and apply it, then move on to the next; or select
+                  several and apply their suggestions as they are.
+                </s-text>
+              ) : null}
               <ProductFilterChips
                 filters={filters}
                 options={facetOptions}
@@ -336,18 +482,30 @@ export default function Products() {
           {rows.length === 0 ? (
             <s-box padding="base">
               <s-text color="subdued">
-                {total === 0 &&
-                q === "" &&
-                status === "all" &&
-                !hideArchived &&
-                !hasProductFilters(filters)
-                  ? "The catalogue has not been read yet. It is read every night, and after a sale campaign asks for it."
-                  : "No products match."}
+                {review
+                  ? "No AI suggestions are waiting. Autofill products from this list, from a product's Attributes tab, or from Sources › Review."
+                  : total === 0 &&
+                      q === "" &&
+                      status === "all" &&
+                      !hideArchived &&
+                      !hasProductFilters(filters)
+                    ? "The catalogue has not been read yet. It is read every night, and after a sale campaign asks for it."
+                    : "No products match."}
               </s-text>
             </s-box>
           ) : (
             <s-table variant="auto" {...(loading ? { loading: true } : {})}>
               <s-table-header-row>
+                <s-table-header listSlot="inline">
+                  <s-checkbox
+                    label="Select every product on this page"
+                    labelAccessibilityVisibility="exclusive"
+                    checked={selection.all}
+                    onChange={(e) =>
+                      selection.toggleAll(e.currentTarget.checked)
+                    }
+                  />
+                </s-table-header>
                 <s-table-header listSlot="primary">Product</s-table-header>
                 {visibleColumns.map((column) => {
                   const { listSlot, format } = COLUMN_HEADER[column];
@@ -368,6 +526,19 @@ export default function Products() {
                     key={row.productId}
                     clickDelegate={`open-${row.productId}`}
                   >
+                    <s-table-cell>
+                      <s-checkbox
+                        label={`Select ${row.title}`}
+                        labelAccessibilityVisibility="exclusive"
+                        checked={selection.selected.has(row.productId)}
+                        onChange={(e) =>
+                          selection.toggle(
+                            row.productId,
+                            e.currentTarget.checked,
+                          )
+                        }
+                      />
+                    </s-table-cell>
                     <s-table-cell>
                       <s-stack
                         direction="inline"
@@ -399,6 +570,7 @@ export default function Products() {
                           {row.sku ? (
                             <s-text color="subdued">{row.sku}</s-text>
                           ) : null}
+                          <AutofillBadge view={row.autofill} />
                         </s-stack>
                       </s-stack>
                     </s-table-cell>
@@ -411,7 +583,7 @@ export default function Products() {
             </s-table>
           )}
 
-          <s-box padding="small-200">
+          <s-box paddingInline="base" paddingBlock="small-200">
             <s-grid
               gridTemplateColumns="1fr auto"
               gap="base"
@@ -447,6 +619,35 @@ export default function Products() {
           </s-box>
         </s-stack>
       </s-section>
+      <BulkBar
+        count={selection.selected.size}
+        noun={selection.selected.size === 1 ? "product" : "products"}
+        busy={acting}
+        onClear={selection.clear}
+        actions={[
+          ...([...selection.selected].some((id) => readyById.has(id))
+            ? [
+                {
+                  label: "Apply suggestions",
+                  primary: true,
+                  onAct: () =>
+                    act(
+                      "apply-autofill",
+                      [...selection.selected].filter((id) => readyById.has(id)),
+                    ),
+                },
+              ]
+            : []),
+          ...(autofillAvailable
+            ? [
+                {
+                  label: "Autofill with AI",
+                  onAct: () => act("autofill", [...selection.selected]),
+                },
+              ]
+            : []),
+        ]}
+      />
     </s-page>
   );
 }

@@ -4,7 +4,7 @@ import {
 } from "~/web/lib/attributes";
 
 /**
- * Product setup's own navigation: four destinations, always visible, the
+ * Product setup's own navigation: five destinations, always visible, the
  * current one stated rather than linked (docs/attributes.md § Screens).
  * Links, not buttons, because these are places. Product types goes to the
  * bare tree; a type is a dialog over it, not a place to return to.

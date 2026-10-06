@@ -45,6 +45,7 @@ import { CampaignDetails } from "~/web/components/campaign-details";
 import { CampaignDiscount } from "~/web/components/campaign-discount";
 import { CampaignHeaderActions } from "~/web/components/campaign-header";
 import { ConfirmModal } from "~/web/components/confirm-modal";
+import { PageColumns } from "~/web/components/page-columns";
 import { CampaignSchedule } from "~/web/components/campaign-schedule";
 import {
   CampaignStatus,
@@ -606,7 +607,7 @@ export default function CampaignEditor() {
   ) : null;
 
   return (
-    <s-page heading={campaign.name} inlineSize="base">
+    <s-page heading={campaign.name} inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app/sales">
         Sales
       </s-link>
@@ -761,8 +762,139 @@ export default function CampaignEditor() {
         </s-button>
       </s-modal>
 
-      {/* Main column: the campaign, top to bottom in the order it is built. */}
-      <s-stack direction="block" gap="base">
+      {/*
+       * The campaign, top to bottom in the order it is built, beside its
+       * status and summary, which stay in view as the form scrolls; on a
+       * narrow page the summary follows the form.
+       */}
+      <PageColumns
+        aside={
+          <s-stack direction="block" gap="base">
+            <CampaignStatus
+              status={campaign.status}
+              phase={campaign.phase}
+              run={run}
+              counts={counts}
+              startsAt={campaign.startsAt}
+              endsAt={campaign.endsAt}
+              timeZone={timeZone}
+              createdAt={campaign.createdAt}
+              createdBy={campaign.createdBy}
+              variantsHref={variantsHref}
+              action={
+                activatable ? (
+                  <s-stack direction="block" gap="small-300">
+                    {campaign.status === "draft" && scheduleReady ? (
+                      <s-button
+                        variant="primary"
+                        type="button"
+                        inlineSize="fill"
+                        onClick={() => submit("schedule")}
+                        {...(busy ? { disabled: true } : {})}
+                      >
+                        Schedule campaign
+                      </s-button>
+                    ) : null}
+                    <s-button
+                      variant={
+                        campaign.status === "draft" && scheduleReady
+                          ? "secondary"
+                          : "primary"
+                      }
+                      inlineSize="fill"
+                      command="--show"
+                      commandFor={CONFIRM_MODAL_ID}
+                      {...(busy || dirty || !preview || toModify === 0
+                        ? { disabled: true }
+                        : {})}
+                    >
+                      {campaign.status === "paused"
+                        ? "Resume"
+                        : campaign.status === "scheduled" || scheduleReady
+                          ? "Activate now"
+                          : "Activate campaign"}
+                    </s-button>
+                  </s-stack>
+                ) : null
+              }
+              actionNote={actionNote}
+              {...(review > 0 && !activatable && campaign.status !== "active"
+                ? {
+                    reviewAll: {
+                      restoreId: CONFIRM_IDS.reviewRestore,
+                      releaseId: CONFIRM_IDS.reviewRelease,
+                      busy,
+                    },
+                  }
+                : {})}
+            />
+
+            {catalogue.snapshotAt === null ? (
+              <s-banner
+                tone="warning"
+                heading="The catalogue has not been read yet"
+              >
+                <s-stack direction="block" gap="small-300">
+                  <s-paragraph>
+                    {catalogue.reading
+                      ? "Reading it from Shopify now. The summary appears when it finishes."
+                      : "Read the catalogue once to see what this campaign would do."}
+                  </s-paragraph>
+                  {!catalogue.reading ? (
+                    <s-stack direction="inline">
+                      <s-button
+                        type="button"
+                        onClick={() => submit("refresh-catalogue")}
+                        {...(busy ? { disabled: true } : {})}
+                      >
+                        Read the catalogue
+                      </s-button>
+                    </s-stack>
+                  ) : null}
+                </s-stack>
+              </s-banner>
+            ) : null}
+
+            {preview || campaign.status !== "draft" ? (
+              <CampaignSummary
+                discount={describeFormDiscount(form, campaign.currency)}
+                counts={summaryCounts}
+                refreshing={live.refreshing}
+                note={live.note}
+                schedule={schedule}
+                conflicts={conflictSummary(
+                  form.conflictStrategy,
+                  form.priority,
+                )}
+                variantsHref={variantsHref}
+                csvHref={csvHref}
+                hasVariants={
+                  campaign.status !== "draft" || (shown?.variants ?? 0) > 0
+                }
+                dirty={dirty}
+                snapshotAt={
+                  shown ? (shown.snapshotAt ?? catalogue.snapshotAt) : null
+                }
+                discountsUnchecked={
+                  preview?.discounts?.kind === "unavailable"
+                    ? preview.discounts.reason
+                    : null
+                }
+              />
+            ) : null}
+
+            {shown ? (
+              <CampaignWarnings
+                conflicts={shown.conflicts}
+                scheduledOverlaps={shown.scheduledOverlaps}
+                fixedPriceMarkets={shown.fixedPriceMarkets}
+                discounts={preview?.discounts ?? null}
+                campaignHref={(id) => `/app/sales/${id}`}
+              />
+            ) : null}
+          </s-stack>
+        }
+      >
         {result && !result.ok && !result.field ? (
           <s-banner tone="critical" heading="That did not work">
             <s-paragraph>{result.message}</s-paragraph>
@@ -838,145 +970,7 @@ export default function CampaignEditor() {
         />
 
         <CampaignActivity events={events} />
-      </s-stack>
-
-      {/*
-       * Sidebar: status, the summary, warnings. Sticky, so the answer stays
-       * beside the question while the form scrolls; capped at the viewport
-       * and scrolling inside it, so nothing in it is ever out of reach on a
-       * short screen. Layout only — every colour and space is Polaris's.
-       */}
-      <div
-        slot="aside"
-        style={{
-          position: "sticky",
-          top: "1rem",
-          maxHeight: "calc(100vh - 2rem)",
-          overflowY: "auto",
-        }}
-      >
-        <s-stack direction="block" gap="base">
-          <CampaignStatus
-            status={campaign.status}
-            phase={campaign.phase}
-            run={run}
-            counts={counts}
-            startsAt={campaign.startsAt}
-            endsAt={campaign.endsAt}
-            timeZone={timeZone}
-            createdAt={campaign.createdAt}
-            createdBy={campaign.createdBy}
-            variantsHref={variantsHref}
-            action={
-              activatable ? (
-                <s-stack direction="block" gap="small-300">
-                  {campaign.status === "draft" && scheduleReady ? (
-                    <s-button
-                      variant="primary"
-                      type="button"
-                      inlineSize="fill"
-                      onClick={() => submit("schedule")}
-                      {...(busy ? { disabled: true } : {})}
-                    >
-                      Schedule campaign
-                    </s-button>
-                  ) : null}
-                  <s-button
-                    variant={
-                      campaign.status === "draft" && scheduleReady
-                        ? "secondary"
-                        : "primary"
-                    }
-                    inlineSize="fill"
-                    command="--show"
-                    commandFor={CONFIRM_MODAL_ID}
-                    {...(busy || dirty || !preview || toModify === 0
-                      ? { disabled: true }
-                      : {})}
-                  >
-                    {campaign.status === "paused"
-                      ? "Resume"
-                      : campaign.status === "scheduled" || scheduleReady
-                        ? "Activate now"
-                        : "Activate campaign"}
-                  </s-button>
-                </s-stack>
-              ) : null
-            }
-            actionNote={actionNote}
-            {...(review > 0 && !activatable && campaign.status !== "active"
-              ? {
-                  reviewAll: {
-                    restoreId: CONFIRM_IDS.reviewRestore,
-                    releaseId: CONFIRM_IDS.reviewRelease,
-                    busy,
-                  },
-                }
-              : {})}
-          />
-
-          {catalogue.snapshotAt === null ? (
-            <s-banner
-              tone="warning"
-              heading="The catalogue has not been read yet"
-            >
-              <s-stack direction="block" gap="small-300">
-                <s-paragraph>
-                  {catalogue.reading
-                    ? "Reading it from Shopify now. The summary appears when it finishes."
-                    : "Read the catalogue once to see what this campaign would do."}
-                </s-paragraph>
-                {!catalogue.reading ? (
-                  <s-stack direction="inline">
-                    <s-button
-                      type="button"
-                      onClick={() => submit("refresh-catalogue")}
-                      {...(busy ? { disabled: true } : {})}
-                    >
-                      Read the catalogue
-                    </s-button>
-                  </s-stack>
-                ) : null}
-              </s-stack>
-            </s-banner>
-          ) : null}
-
-          {preview || campaign.status !== "draft" ? (
-            <CampaignSummary
-              discount={describeFormDiscount(form, campaign.currency)}
-              counts={summaryCounts}
-              refreshing={live.refreshing}
-              note={live.note}
-              schedule={schedule}
-              conflicts={conflictSummary(form.conflictStrategy, form.priority)}
-              variantsHref={variantsHref}
-              csvHref={csvHref}
-              hasVariants={
-                campaign.status !== "draft" || (shown?.variants ?? 0) > 0
-              }
-              dirty={dirty}
-              snapshotAt={
-                shown ? (shown.snapshotAt ?? catalogue.snapshotAt) : null
-              }
-              discountsUnchecked={
-                preview?.discounts?.kind === "unavailable"
-                  ? preview.discounts.reason
-                  : null
-              }
-            />
-          ) : null}
-
-          {shown ? (
-            <CampaignWarnings
-              conflicts={shown.conflicts}
-              scheduledOverlaps={shown.scheduledOverlaps}
-              fixedPriceMarkets={shown.fixedPriceMarkets}
-              discounts={preview?.discounts ?? null}
-              campaignHref={(id) => `/app/sales/${id}`}
-            />
-          ) : null}
-        </s-stack>
-      </div>
+      </PageColumns>
 
       {/* The save bar. `data-save-bar` cannot see React-driven fields; the page drives it. */}
       <ui-save-bar id={SAVE_BAR_ID}>

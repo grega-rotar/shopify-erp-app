@@ -195,7 +195,7 @@ export default function AttributeEditor() {
   };
 
   return (
-    <s-page heading={saved.name}>
+    <s-page heading={saved.name} inlineSize="large">
       <s-link slot="breadcrumb-actions" href={PRODUCT_SETUP_ROUTES.attributes}>
         Attributes
       </s-link>

@@ -4,12 +4,18 @@ import { z } from "zod";
 import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
-  assignType,
   assignedTypeFor,
   clearAssignedType,
 } from "~/adapters/db/repositories/product-type-assignment.server";
 import { liveHolds } from "~/adapters/db/repositories/product-workspace.server";
 import { getLogger } from "~/adapters/observability/logger.server";
+import {
+  applyAutofill,
+  autofillAvailability,
+  discardAutofill,
+  requestAutofill,
+} from "~/adapters/products/autofill.server";
+import { chooseProductType } from "~/adapters/products/type-choice.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
 import {
   readWorkspaceProduct,
@@ -236,6 +242,33 @@ async function runProductAction(input: {
   const { admin, principal, actor, productId, formData } = input;
   const intent = String(formData.get("intent") ?? "");
 
+  // AI autofill (docs/attributes.md § AI autofill): ask, then apply what
+  // a person kept, or discard it.
+  if (intent === "autofill") {
+    const available = await autofillAvailability(principal);
+    if (!available.ok) return { ok: false, message: available.message };
+    const queued = await requestAutofill(principal, [productId], actor);
+    return {
+      ok: true,
+      message:
+        queued > 0
+          ? "Asking for suggestions. They appear here for review."
+          : "Suggestions are already being made for this product.",
+    };
+  }
+  if (intent === "apply-autofill")
+    return applyAutofill(admin, principal, {
+      productId,
+      actor,
+      keepType: formData.get("keepType") === "true",
+      ...(String(formData.get("typeId") ?? "") !== ""
+        ? { typeId: String(formData.get("typeId")) }
+        : {}),
+      keepValues: new Set(formData.getAll("keep").map(String)),
+    });
+  if (intent === "discard-autofill")
+    return discardAutofill(principal, productId, actor);
+
   if (intent === "translate") {
     const locales = String(formData.get("locales") ?? "")
       .split(",")
@@ -301,7 +334,12 @@ async function runProductAction(input: {
         message:
           "That product type is no longer in the plan. Reload to see the current types.",
       };
-    await assignType(principal, productId, type.id, actor);
+    await chooseProductType(admin, principal, {
+      schema,
+      productId,
+      typeId: type.id,
+      chosenBy: actor,
+    });
     await appendEvent(principal, {
       entityType: "product",
       entityId: productId,

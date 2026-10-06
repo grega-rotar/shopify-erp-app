@@ -17,8 +17,10 @@ export const PRODUCT_SETUP_ROUTES = {
   attributes: "/app/product-setup/attributes",
   attribute: (id: string) => `/app/product-setup/attributes/${id}`,
   sets: "/app/product-setup/sets",
+  menu: "/app/product-setup/menu",
   settings: "/app/product-setup/settings",
   export: "/app/product-setup/schema.json",
+  exportCsv: "/app/product-setup/schema.csv",
 } as const;
 
 /** The workspace's own navigation, in order. */
@@ -30,6 +32,7 @@ export const PRODUCT_SETUP_SECTIONS = [
     href: PRODUCT_SETUP_ROUTES.attributes,
   },
   { key: "sets", label: "Attribute sets", href: PRODUCT_SETUP_ROUTES.sets },
+  { key: "menu", label: "Store menu", href: PRODUCT_SETUP_ROUTES.menu },
   { key: "settings", label: "Settings", href: PRODUCT_SETUP_ROUTES.settings },
 ] as const;
 

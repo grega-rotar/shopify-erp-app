@@ -45,6 +45,8 @@ export interface ProductListQuery {
   sort: ProductSort;
   page: number;
   pageSize: number;
+  /** Only these products (Shopify GIDs), such as those with AI suggestions waiting. */
+  productIds?: readonly string[];
 }
 
 export interface ProductListRow {
@@ -126,6 +128,8 @@ export async function listCatalogueProducts(
     and.push({ categoryName: { in: filters.category } });
   }
   if (filters.tag.length > 0) and.push({ tags: { hasSome: filters.tag } });
+  if (query.productIds)
+    and.push({ shopifyProductId: { in: [...query.productIds] } });
   if (q !== "") {
     and.push({
       OR: [

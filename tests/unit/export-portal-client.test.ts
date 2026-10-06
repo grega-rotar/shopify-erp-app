@@ -251,3 +251,85 @@ describe("export portal client", () => {
     );
   });
 });
+
+describe("AI autofill calls (docs/sources.md § AI autofill)", () => {
+  const product = {
+    code: "gid://shopify/Product/1",
+    shopifyProductId: "gid://shopify/Product/1",
+    name: "AC-X 5.3",
+  };
+
+  it("posts the products and categories and reads one result per product", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        results: [
+          {
+            code: product.code,
+            categoryId: "wave",
+            confidence: 0.92,
+            reason: "A wave sail by name.",
+          },
+        ],
+      }),
+    );
+    const results = await clientWith(fetchImpl).categorize({
+      products: [product],
+      categories: [{ id: "wave", label: "Windsurf > Sails > Wave sails" }],
+    });
+    const [url, init] = calledWith(fetchImpl);
+    expect(url).toBe(`${CREDENTIALS.baseUrl}/api/v1/ai/categorize`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      products: [product],
+    });
+    expect(results).toEqual([
+      {
+        code: product.code,
+        categoryId: "wave",
+        confidence: 0.92,
+        reason: "A wave sail by name.",
+      },
+    ]);
+  });
+
+  it("reads attribute values, a list for several choices", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        values: [
+          { attributeId: "size", variantId: "v1", value: "5.3" },
+          { attributeId: "use", variantId: null, value: ["wave"] },
+        ],
+      }),
+    );
+    const values = await clientWith(fetchImpl).extractAttributes({
+      product,
+      attributes: [
+        { id: "size", name: "Size", format: "measurement", level: "variant" },
+      ],
+    });
+    expect(calledWith(fetchImpl)[0]).toBe(
+      `${CREDENTIALS.baseUrl}/api/v1/ai/extract-attributes`,
+    );
+    expect(values).toHaveLength(2);
+  });
+
+  it("keeps the portal's own words when its AI fails", async () => {
+    const error = await failure(
+      clientWith(
+        vi.fn(async () =>
+          jsonResponse(
+            {
+              error: {
+                code: "ai_unavailable",
+                message: "AI is not configured on the export portal.",
+              },
+            },
+            503,
+          ),
+        ),
+      ).categorize({ products: [product], categories: [] }),
+    );
+    expect(error.httpStatus).toBe(503);
+    expect(error.message).toBe("AI is not configured on the export portal.");
+  });
+});

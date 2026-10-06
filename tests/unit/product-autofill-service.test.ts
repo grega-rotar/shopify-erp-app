@@ -1,0 +1,316 @@
+import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { starterSchema } from "~/domain/attributes/starter";
+import type { AttributeField } from "~/domain/products/attribute-values";
+import { serviceToken } from "~/domain/types";
+
+/**
+ * docs/attributes.md § AI autofill, the service: a product with a type
+ * keeps it and only its empty attributes are asked for; one without is
+ * categorized first; failures land on the product; applying goes through
+ * the same paths a person's edits do, and only for the type the values
+ * were suggested for.
+ */
+
+const state = vi.hoisted(() => ({
+  saved: new Map<string, unknown>(),
+  failed: new Map<string, string>(),
+  chosen: new Map<string, { typeId: string; chosenBy: string | null }>(),
+  categorizeCalls: [] as unknown[],
+  extractCalls: [] as unknown[],
+  categorizeAnswer: [] as Array<{
+    code: string;
+    categoryId: string | null;
+    confidence: number | null;
+    reason: string | null;
+  }>,
+  extractAnswer: [] as Array<{
+    attributeId: string;
+    variantId: string | null;
+    value: string | string[];
+  }>,
+  portalOk: true,
+  categorizeFails: null as Error | null,
+  autofill: null as unknown,
+  typeChoices: [] as unknown[],
+  writes: [] as unknown[],
+  decided: [] as string[],
+  inputs: {} as Record<string, string>,
+}));
+
+vi.mock("~/adapters/db/repositories/attribute-schema.server", () => ({
+  getAttributeSchema: async () => ({ schema: starterSchema(), revision: 1 }),
+}));
+vi.mock("~/adapters/db/repositories/event-log.server", () => ({
+  appendEvent: async () => undefined,
+}));
+vi.mock("~/adapters/db/repositories/product-autofill.server", () => ({
+  markAutofillRunning: async () => undefined,
+  queueAutofills: async (_p: unknown, ids: string[]) => ids,
+  saveAutofillSuggestion: async (_p: unknown, id: string, s: unknown) => {
+    state.saved.set(id, s);
+  },
+  failAutofill: async (_p: unknown, id: string, message: string) => {
+    state.failed.set(id, message);
+  },
+  getAutofill: async () => state.autofill,
+  decideAutofill: async (_p: unknown, _id: string, status: string) => {
+    state.decided.push(status);
+    return true;
+  },
+}));
+vi.mock("~/adapters/db/repositories/product-type-assignment.server", () => ({
+  assignmentsFor: async () => state.chosen,
+}));
+vi.mock("~/adapters/export-portal/service.server", () => ({
+  portalFor: async () =>
+    state.portalOk
+      ? {
+          ok: true,
+          client: {
+            categorize: async (input: unknown) => {
+              state.categorizeCalls.push(input);
+              if (state.categorizeFails) throw state.categorizeFails;
+              return state.categorizeAnswer;
+            },
+            extractAttributes: async (input: unknown) => {
+              state.extractCalls.push(input);
+              return state.extractAnswer;
+            },
+          },
+        }
+      : { ok: false, reason: "not_connected", message: "Connect the export portal first." },
+}));
+
+const FIELDS: AttributeField[] = [
+  {
+    attributeId: "brand",
+    name: "Brand",
+    description: "",
+    required: true,
+    scope: "product",
+    dataType: "text",
+    group: null,
+    namespace: "recharge",
+    key: "brand",
+    edit: {
+      kind: "text",
+      shopifyType: "single_line_text_field",
+      unit: "",
+      measurementUnit: null,
+      options: [],
+    },
+  },
+];
+vi.mock("~/adapters/products/attribute-values.server", () => ({
+  readAttributeValues: async () => ({
+    fields: FIELDS,
+    inputs: state.inputs,
+    variantMetafields: [],
+    variantDetailsRead: true,
+  }),
+}));
+vi.mock("~/adapters/products/type-choice.server", () => ({
+  chooseProductType: async (_a: unknown, _p: unknown, input: unknown) => {
+    state.typeChoices.push(input);
+  },
+}));
+vi.mock("~/adapters/queue/boss.server", () => ({ enqueue: async () => "job" }));
+
+function product(id: string, productType = "") {
+  return {
+    productId: id,
+    title: `Product ${id}`,
+    descriptionHtml: "<p>A wave sail.</p>",
+    vendor: "Point-7",
+    productType,
+    tags: [],
+    category: null,
+    hasOnlyDefaultVariant: true,
+    options: [],
+    variants: [{ variantId: `${id}-v`, title: "Default", sku: null, options: [] }],
+    metafields: {},
+  };
+}
+vi.mock("~/adapters/shopify/product-workspace", () => ({
+  readWorkspaceProduct: async (_a: unknown, id: string) =>
+    id === "gone" ? null : product(id, id === "typed" ? "Wave sails" : ""),
+  writeMetafields: async (_a: unknown, writes: unknown[]) => {
+    state.writes.push(...writes);
+    return { ok: true, errors: [] };
+  },
+}));
+
+const { applyAutofill, suggestAutofill } = await import(
+  "~/adapters/products/autofill.server"
+);
+const { ExportPortalError } = await import("~/adapters/export-portal/errors");
+
+const admin = {} as AdminApiContext;
+const principal = serviceToken("shop.myshopify.com", "test");
+
+beforeEach(() => {
+  state.saved.clear();
+  state.failed.clear();
+  state.chosen.clear();
+  state.categorizeCalls = [];
+  state.extractCalls = [];
+  state.categorizeAnswer = [];
+  state.extractAnswer = [];
+  state.portalOk = true;
+  state.categorizeFails = null;
+  state.autofill = null;
+  state.typeChoices = [];
+  state.writes = [];
+  state.decided = [];
+  state.inputs = {};
+});
+
+describe("suggesting", () => {
+  it("categorizes against the plan's assignable types, then asks for the empty attributes", async () => {
+    state.categorizeAnswer = [
+      { code: "p1", categoryId: "wave", confidence: 0.9, reason: "By name." },
+    ];
+    state.extractAnswer = [
+      { attributeId: "brand", variantId: null, value: "Point-7" },
+    ];
+    await suggestAutofill(admin, principal, ["p1"]);
+
+    const sent = state.categorizeCalls[0] as {
+      categories: Array<{ id: string; label: string }>;
+    };
+    expect(sent.categories).toContainEqual({
+      id: "wave",
+      label: "All products > Windsurf > Sails > Wave sails",
+    });
+    expect(sent.categories.some((c) => c.id === "windsurf")).toBe(false);
+    expect(state.saved.get("p1")).toMatchObject({
+      typeId: "wave",
+      typeOrigin: "suggested",
+      typeConfidence: 0.9,
+      values: [{ key: "brand", input: "Point-7" }],
+      engine: "export-portal",
+    });
+  });
+
+  it("keeps a type the product already has and does not categorize it", async () => {
+    await suggestAutofill(admin, principal, ["typed"]);
+    expect(state.categorizeCalls).toEqual([]);
+    expect(state.saved.get("typed")).toMatchObject({
+      typeId: "wave",
+      typeOrigin: "kept",
+    });
+  });
+
+  it("asks nothing when every attribute is filled", async () => {
+    state.inputs = { brand: "Point-7" };
+    await suggestAutofill(admin, principal, ["typed"]);
+    expect(state.extractCalls).toEqual([]);
+    expect(state.saved.get("typed")).toMatchObject({ values: [] });
+  });
+
+  it("saves 'no type fits' when the categorizer names none", async () => {
+    state.categorizeAnswer = [
+      { code: "p1", categoryId: "invented", confidence: 0.99, reason: "x" },
+    ];
+    await suggestAutofill(admin, principal, ["p1"]);
+    expect(state.saved.get("p1")).toMatchObject({
+      typeId: null,
+      typeConfidence: null,
+      values: [],
+    });
+    expect(state.extractCalls).toEqual([]);
+  });
+
+  it("records failures on the products they concern", async () => {
+    state.categorizeFails = new ExportPortalError({
+      kind: "server",
+      path: "/ai/categorize",
+      httpStatus: 503,
+      message: "AI is not configured on the export portal.",
+    });
+    await suggestAutofill(admin, principal, ["p1", "gone", "typed"]);
+    expect(state.failed.get("p1")).toBe(
+      "AI is not configured on the export portal.",
+    );
+    expect(state.failed.get("gone")).toMatch(/could not be read/);
+    expect(state.saved.has("typed")).toBe(true);
+  });
+
+  it("fails every product when the portal is not connected", async () => {
+    state.portalOk = false;
+    await suggestAutofill(admin, principal, ["p1", "p2"]);
+    expect([...state.failed.values()]).toEqual([
+      "Connect the export portal first.",
+      "Connect the export portal first.",
+    ]);
+  });
+});
+
+describe("applying", () => {
+  const ready = {
+    status: "ready",
+    typeId: "wave",
+    typeOrigin: "suggested",
+    typeConfidence: 0.9,
+    typeReason: null,
+    values: [
+      {
+        key: "brand",
+        attributeId: "brand",
+        variantId: null,
+        name: "Brand",
+        input: "Point-7",
+        display: "Point-7",
+      },
+    ],
+    engine: "export-portal",
+    error: null,
+  };
+
+  it("chooses the type, then fills the kept values for it", async () => {
+    state.autofill = ready;
+    // After the type is chosen, the product has it.
+    state.chosen.set("p1", { typeId: "wave", chosenBy: "staff" });
+    const outcome = await applyAutofill(admin, principal, {
+      productId: "p1",
+      actor: "staff",
+      keepType: true,
+      keepValues: null,
+    });
+    expect(state.typeChoices).toEqual([
+      expect.objectContaining({ productId: "p1", typeId: "wave", chosenBy: "staff" }),
+    ]);
+    expect(state.writes).toEqual([
+      expect.objectContaining({ ownerId: "p1", key: "brand", value: "Point-7" }),
+    ]);
+    expect(state.decided).toEqual(["applied"]);
+    expect(outcome).toEqual({ ok: true, message: "Applied: type set, 1 value filled." });
+  });
+
+  it("writes no values for a type the product does not have", async () => {
+    state.autofill = ready;
+    const outcome = await applyAutofill(admin, principal, {
+      productId: "p1",
+      actor: "staff",
+      keepType: false,
+      keepValues: null,
+    });
+    expect(state.typeChoices).toEqual([]);
+    expect(state.writes).toEqual([]);
+    expect(outcome.message).toMatch(/another product type/);
+  });
+
+  it("refuses a suggestion that is not waiting", async () => {
+    state.autofill = { ...ready, status: "applied" };
+    const outcome = await applyAutofill(admin, principal, {
+      productId: "p1",
+      actor: null,
+      keepType: true,
+      keepValues: null,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(state.decided).toEqual([]);
+  });
+});
