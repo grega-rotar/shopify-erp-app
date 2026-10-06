@@ -285,7 +285,7 @@ describe("figures", () => {
   it("names a bucket and a span in UTC, in the viewer's own locale", () => {
     // The wording is the runtime locale's; what is asserted is the UTC day and hour.
     expect(formatBucketTitle("2026-09-20T14:00:00.000Z", "hour")).toMatch(
-      /20.*14:00 UTC/,
+      /20.*(14:00|02:00\sPM) UTC/,
     );
     expect(formatBucketTitle("2026-09-20T23:30:00.000Z", "day")).toMatch(
       /20.*2026|2026.*20/,
