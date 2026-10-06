@@ -1,0 +1,17 @@
+# Manual smoke test for GitHub-hosted runner allocation. It has no checkout,
+# secrets, environment, concurrency or permissions beyond the default, so if
+# this job is "not acquired by Runner of type hosted", the cause is on the
+# GitHub/account side rather than in this repository's CI configuration.
+name: runner-test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "GitHub hosted runner acquired successfully"
+      - run: uname -a
