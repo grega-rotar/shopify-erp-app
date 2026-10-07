@@ -6,6 +6,9 @@ export default tseslint.config(
   {
     ignores: [
       "build/**",
+      "build-e2e/**",
+      "playwright-report/**",
+      "test-results/**",
       "node_modules/**",
       ".react-router/**",
       "public/**",

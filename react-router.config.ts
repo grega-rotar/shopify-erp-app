@@ -38,5 +38,7 @@ export default {
   // rather than the template's top-level app/ directory.
   appDirectory: "src/web",
   ssr: true,
+  // The e2e build (vite.config.ts) is kept apart from the production one.
+  buildDirectory: process.env.E2E_BUILD === "1" ? "build-e2e" : "build",
   allowedActionOrigins: ownHosts(),
 } satisfies Config;

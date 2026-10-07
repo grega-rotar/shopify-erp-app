@@ -132,6 +132,8 @@ normally injected rather than stored in `.env`.
 | `npm run lint`         | ESLint, including architecture boundaries             |
 | `npm test`             | Full Vitest suite once                                |
 | `npm run test:watch`   | Vitest watch mode                                     |
+| `npm run build:e2e`    | Build the e2e app and worker into `build-e2e/`        |
+| `npm run test:e2e`     | `build:e2e`, then the Playwright suite                |
 | `npm run config:link`  | Link `shopify.app.toml` to a Partner app              |
 | `npm run env -- pull`  | Pull linked Shopify environment values                |
 | `npm run deploy`       | Deploy Shopify app configuration/extensions           |
@@ -299,6 +301,81 @@ Each database test file creates its own shop with a random domain and deletes it
 afterwards; every table is tenant-scoped with `ON DELETE CASCADE`, so it cannot
 touch another tenant's rows.
 
+## End-to-end tests
+
+`tests/e2e/` drives the app in a real browser (Playwright, Chromium) against
+**fake Shopify and fake MetaKocka**, with the real web server, the real worker
+and a real PostgreSQL. Nothing leaves the machine: no Shopify store, no
+MetaKocka company, no tunnel, no secrets.
+
+```bash
+docker compose -f docker-compose.dev.yml up -d postgres   # or any PostgreSQL
+npx playwright install chromium                           # once
+npm run test:e2e                                          # build:e2e, then the suite
+npx playwright test sales                                 # one spec, reusing build-e2e/
+npx playwright show-report                                # traces and screenshots
+```
+
+### How it is put together
+
+- **`npm run build:e2e`** builds the web app and the worker into `build-e2e/`
+  with one module swapped: `~/adapters/shopify/shopify.server` becomes
+  `tests/e2e/app/shopify.server.ts` (a Vite alias in `vite.config.ts`, an
+  esbuild plugin in `tests/e2e/support/build.ts`). The signed-in shop is the
+  one the `e2e_shop` cookie names, and Admin GraphQL is answered by the fake
+  services. The production `build/` never contains that module — there is no
+  runtime switch that could be left on — and the module refuses to load
+  without `E2E_FAKE_SERVICES_URL`.
+- **The network guard** (`tests/e2e/app/network-guard.ts`), installed by that
+  module, rewrites `https://main.metakocka.si` to the fake services and
+  **refuses every other non-loopback request**, so OpenAI, the export portal,
+  Shopify and a live MetaKocka are unreachable from an e2e run whatever the
+  code under test does.
+- **The fake services** (`tests/e2e/fake-services/`) keep an in-memory store and
+  company per shop. Shopify handlers are keyed by GraphQL operation name (every
+  query in `src/adapters/shopify` is named), MetaKocka handlers by endpoint
+  path. A call with no handler is answered with an error **and fails the
+  test**, so a page that starts asking for something new says so.
+- **The stack** (`tests/e2e/support/stack.ts`, started by Playwright's
+  `webServer`) runs `prisma migrate deploy` on the e2e database and starts the
+  fake services, the worker and `react-router-serve`. The e2e database is
+  `E2E_DATABASE_URL`, or `.env`'s `DATABASE_URL` with `_e2e` appended to the
+  database name; it must end in `_e2e`. Nothing is reset or dropped.
+- **App Bridge** is replaced in the browser by
+  `tests/e2e/support/app-bridge-stub.js`: toasts land in `#e2e-toasts`, and
+  `<ui-save-bar>` shows its buttons inline so a spec can press Save. Polaris is
+  the real `polaris.js`. Page-header actions (`slot="primary-action"`) are what
+  the admin moves into its title bar; outside the admin they are not rendered,
+  so a spec presses them with `dispatchEvent("click")`.
+
+### Writing a spec
+
+Import `test` and `expect` from `tests/e2e/support/test.ts`. Every test gets
+its own `shop` — a fresh tenant, its own fake store, the cookie — so specs run
+in parallel. After the test the fixture waits for the shop's pg-boss jobs to
+settle, fails on any job that failed, fails on an uncaught page error and on an
+unhandled fake call, and deletes the shop (everything cascades from it).
+
+- `shop.resetServices({ shopify, metakocka })` sets the fake store and company
+  (schemas in `tests/e2e/fake-services/state.ts`); `shop.services()` reads them
+  back, which is how a spec checks what the worker wrote.
+- `seedConnectedShop` (`tests/e2e/support/seed.ts`) starts from a shop that
+  finished setup, built with the app's own repository calls;
+  `seedCatalogueSnapshot` adds the sale-campaign catalogue.
+- `shop.settleJobs()` waits for the background work an action queued.
+- Polaris form controls live in shadow DOM: `getByLabel` and `getByRole` reach
+  text fields, checkboxes and buttons; this app's `Dropdown` keeps its value in
+  a hidden `input[name=…]`.
+- A new page under `/app` belongs in `tests/e2e/specs/pages.spec.ts`. When a
+  spec fails on "no handler for X", add a handler that answers in Shopify's or
+  MetaKocka's real shape — never invent fields.
+
+The specs: `smoke` (a new shop), `setup` (guided setup end to end, including
+the jobs Finish queues), `stock` (Sync stock now writes MetaKocka stock to
+Shopify), `exceptions` (Resolve and Ignore), `sales` (activate writes sale
+prices, End restores them) and `pages` (every parameterless page renders for a
+set-up shop).
+
 ## Production Compose
 
 The production VM has too little memory to build the image next to PostgreSQL,
@@ -308,8 +385,8 @@ has no `build:` for that reason; `APP_IMAGE` in `.env` overrides the tag.
 
 ### Continuous deployment
 
-`.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `deploy` →
-`verify`.
+`.github/workflows/deploy.yml` (workflow `ci`) runs `check` and `e2e` →
+`deploy` → `verify`.
 
 `check` runs on every pull request and every push to `main`: `npm ci`,
 `npm run typecheck`, `npm run lint`, `npx prisma migrate deploy` against a
@@ -318,8 +395,13 @@ throwaway PostgreSQL service, `npm test` (including `tests/db/`), and
 Runs on `main` are queued rather than cancelled, so pushes are checked and
 deployed strictly in order and an older commit never lands over a newer one.
 
-`deploy` runs only on a push to `main`, only after `check` passes, and one at a
-time (concurrency group `deploy-prod`). It builds the image on GitHub Actions
+`e2e` runs beside `check` on the same events: `npm run test:e2e` against its
+own PostgreSQL service (`ci_e2e`). The Playwright report — a trace and a
+screenshot for every failure — is uploaded as the `playwright-report` artifact
+whether the run passes or not.
+
+`deploy` runs only on a push to `main`, only after `check` and `e2e` pass, and
+one at a time (concurrency group `deploy-prod`). It builds the image on GitHub Actions
 with the commit SHA baked in as `APP_VERSION` (and the
 `org.opencontainers.image.revision` label), pushes it tagged with the full
 commit SHA and `latest`, then SSHes to the VM as the `deploy` user and, in

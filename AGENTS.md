@@ -99,7 +99,8 @@ npm run build
 ```
 
 Also run `npx prisma validate`, migration/schema checks, or Compose/Docker checks
-when those areas change. Before calling work complete:
+when those areas change, and `npm run test:e2e` when a page, an action, a job or
+a Shopify/MetaKocka call changes (docs/development.md § End-to-end tests). Before calling work complete:
 
 1. Inspect `git status` and the complete relevant diff.
 2. Run proportionate validation and report any blocker honestly.

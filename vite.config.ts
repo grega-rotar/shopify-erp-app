@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig, type UserConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -25,7 +27,26 @@ const hmrConfig =
         clientPort: 443,
       };
 
+/*
+ * `npm run build:e2e` (E2E_BUILD=1) swaps the Shopify module for the e2e one,
+ * which answers auth and Admin GraphQL from the fake services. Only that build
+ * contains it, and it goes to build-e2e/ (react-router.config.ts), never
+ * build/. See docs/development.md § End-to-end tests.
+ */
+const e2eAlias =
+  process.env.E2E_BUILD === "1"
+    ? [
+        {
+          find: /^~\/adapters\/shopify\/shopify\.server$/,
+          replacement: fileURLToPath(
+            new URL("./tests/e2e/app/shopify.server.ts", import.meta.url),
+          ),
+        },
+      ]
+    : [];
+
 export default defineConfig({
+  resolve: { alias: e2eAlias },
   server: {
     allowedHosts: [host],
     cors: { preflightContinue: true },

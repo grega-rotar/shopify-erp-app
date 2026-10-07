@@ -525,6 +525,26 @@ expectation before designing searchable encrypted payloads.
 
 ## Engineering debt
 
+### T-29 — Every page logs a React hydration mismatch
+
+Found by the e2e suite (2026-10-07): every page throws React errors #418 and
+#423 while hydrating, so React discards the server render and renders the page
+again on the client. The cause is `polaris.js` — blocking only that script makes
+the errors disappear — most likely because it upgrades `s-*` elements before
+React hydrates them. Presumably the same in the admin, since the script is the
+same. Pages work, but each is rendered twice. `tests/e2e/support/test.ts`
+tolerates exactly these two errors and fails on any other page error; remove the
+exception once this is fixed.
+
+### T-30 — The first stock pass after setup can miss every SKU
+
+Finish setup queues `sync-catalogue` and `sync-inventory` together, and
+inventory writes only SKUs the catalogue has already matched. If inventory runs
+first — which the e2e run showed it can — the first pass writes nothing, and
+stock arrives with the next scheduled cycle, up to five minutes later. Nothing
+is lost. Running inventory after the catalogue (a follow-up job from
+`sync-catalogue`, or a delay) would close the gap.
+
 ### T-01/T-04 — Coverage and database concurrency are unmeasured
 
 Vitest coverage tooling is not installed. More importantly, tests do not run

@@ -1,6 +1,7 @@
-# check -> deploy -> verify.
+# check + e2e -> deploy -> verify.
 #
-# Checks every pull request and every push to main. On main, a green check
+# Checks every pull request and every push to main, and runs the end-to-end
+# suite beside the check. On main, a green check and e2e run
 # builds the image, pushes it to Docker Hub tagged with the commit SHA and
 # `latest`, and rolls the production stack onto that exact SHA over SSH, rolling
 # back to the previous image if it does not come up healthy on that commit.
@@ -69,8 +70,50 @@ jobs:
       # request rather than the deploy.
       - run: npm run build
 
+  # The e2e build in a real browser against the fake Shopify and MetaKocka
+  # (docs/development.md "End-to-end tests"). Its own database, because every
+  # e2e run migrates and writes to it; the report is kept whether it passes or
+  # not, and holds a trace and screenshot for every failure.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgresql://ci:ci@localhost:5432/ci_e2e?schema=public
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
   deploy:
-    needs: check
+    needs: [check, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # The Docker Hub and SSH secrets are environment secrets on "Recharge".
