@@ -2351,6 +2351,8 @@ model SourceAutofill {
   enabled        Boolean @default(false)
   /// Also suggest the type's attribute values, not only the type.
   fillAttributes Boolean @default(true) @map("fill_attributes")
+  /// Apply a confident suggestion at once instead of waiting for review.
+  autoApply      Boolean @default(false) @map("auto_apply")
   updatedBy      String? @map("updated_by")
 
   createdAt DateTime @default(now()) @map("created_at")

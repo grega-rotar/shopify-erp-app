@@ -54,7 +54,12 @@ vi.mock("~/adapters/db/repositories/product-autofill.server", () => ({
   failAutofill: async (_p: unknown, id: string, message: string) => {
     state.failed.set(id, message);
   },
-  getAutofill: async () => state.autofill,
+  // A suggestion just saved is what an automatic apply reads back.
+  getAutofill: async (_p: unknown, id: string) =>
+    state.autofill ??
+    (state.saved.has(id)
+      ? { status: "ready", ...(state.saved.get(id) as object) }
+      : null),
   decideAutofill: async (_p: unknown, _id: string, status: string) => {
     state.decided.push(status);
     return true;
@@ -112,8 +117,17 @@ vi.mock("~/adapters/products/attribute-values.server", () => ({
   }),
 }));
 vi.mock("~/adapters/products/type-choice.server", () => ({
-  chooseProductType: async (_a: unknown, _p: unknown, input: unknown) => {
+  chooseProductType: async (
+    _a: unknown,
+    _p: unknown,
+    input: { productId: string; typeId: string; chosenBy: string | null },
+  ) => {
     state.typeChoices.push(input);
+    // Chosen is what the product has from then on.
+    state.chosen.set(input.productId, {
+      typeId: input.typeId,
+      chosenBy: input.chosenBy,
+    });
   },
 }));
 vi.mock("~/adapters/queue/boss.server", () => ({ enqueue: async () => "job" }));
@@ -245,6 +259,50 @@ describe("suggesting", () => {
       "Connect the export portal first.",
       "Connect the export portal first.",
     ]);
+  });
+});
+
+describe("applying on its own, for a source set to", () => {
+  const confident = (confidence: number) => {
+    state.categorizeAnswer = [
+      { code: "p1", categoryId: "wave", confidence, reason: "By name." },
+    ];
+    state.extractAnswer = [
+      { attributeId: "brand", variantId: null, value: "Point-7" },
+    ];
+  };
+
+  it("applies a confident suggestion at once, as the source", async () => {
+    confident(0.9);
+    await suggestAutofill(admin, principal, ["p1"], {
+      fillAttributes: true,
+      autoApply: true,
+      requestedBy: "source:sc_1",
+    });
+    expect(state.typeChoices).toEqual([
+      expect.objectContaining({ typeId: "wave", chosenBy: "source:sc_1" }),
+    ]);
+    expect(state.writes).toHaveLength(1);
+    expect(state.decided).toEqual(["applied"]);
+  });
+
+  it("leaves a suggestion it is not sure of for review", async () => {
+    confident(0.5);
+    await suggestAutofill(admin, principal, ["p1"], {
+      fillAttributes: true,
+      autoApply: true,
+      requestedBy: "source:sc_1",
+    });
+    expect(state.saved.get("p1")).toMatchObject({ typeId: "wave" });
+    expect(state.typeChoices).toEqual([]);
+    expect(state.decided).toEqual([]);
+  });
+
+  it("applies nothing for a source that waits for review", async () => {
+    confident(0.99);
+    await suggestAutofill(admin, principal, ["p1"], { fillAttributes: true });
+    expect(state.typeChoices).toEqual([]);
+    expect(state.decided).toEqual([]);
   });
 });
 

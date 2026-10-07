@@ -7,6 +7,7 @@ import {
   getAttributeSchema,
   saveAttributeSchema,
 } from "~/adapters/db/repositories/attribute-schema.server";
+import { requestTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import type { MutationResult } from "~/domain/attributes/mutations";
 import { schemaProblems } from "~/domain/attributes/schema";
 import {
@@ -81,6 +82,11 @@ export async function commitSchemaChange(
     event,
     detail: { by: actor, revision: saved.revision, summary: result.message },
   });
+  // The store menu follows the type tree once it has been made.
+  if (
+    JSON.stringify(current.schema.types) !== JSON.stringify(result.schema.types)
+  )
+    await requestTypeMenuUpdate(principal);
   return { ok: true, message: result.message, revision: saved.revision };
 }
 

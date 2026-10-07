@@ -16,6 +16,7 @@ import {
   requestAutofill,
 } from "~/adapters/products/autofill.server";
 import { chooseProductType } from "~/adapters/products/type-choice.server";
+import { requestTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import { listShopLocales } from "~/adapters/shopify/locales";
 import {
   readWorkspaceProduct,
@@ -318,6 +319,8 @@ async function runProductAction(input: {
     const typeId = String(formData.get("typeId") ?? "");
     if (typeId === "") {
       await clearAssignedType(principal, productId);
+      // Back to its matched type, or out of the menu: the next update says which.
+      await requestTypeMenuUpdate(principal);
       await appendEvent(principal, {
         entityType: "product",
         entityId: productId,

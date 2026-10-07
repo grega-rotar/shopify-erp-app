@@ -7,10 +7,13 @@ import {
   catalogueForMenu,
   chosenTypes,
   getTypeMenu,
+  recordTypeField,
+  startTypeMenu,
   updateTypeMenu,
   type TypeCollections,
 } from "~/adapters/db/repositories/type-menu.server";
 import { getLogger } from "~/adapters/observability/logger.server";
+import { queueTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import { writeMetafields } from "~/adapters/shopify/product-workspace";
 import { unauthenticated } from "~/adapters/shopify/shopify.server";
 import {
@@ -37,6 +40,8 @@ import { serviceToken } from "~/domain/types";
 export const typeMenuSyncJobSchema = z.object({
   shopDomain: z.string().min(1),
   requestedBy: z.string().nullable().default(null),
+  /** Queued by a change, not a press: it claims the run itself. */
+  automatic: z.boolean().default(false),
 });
 
 /** Products per progress write; `metafieldsSet` takes 25 a call. */
@@ -60,14 +65,30 @@ const OWNER_GONE = /owner does not exist/i;
  *    collection, replaces the items of the menu this app made.
  *
  * Every step finds what an earlier run made, so a retry or a second press
- * repeats nothing. Each collection is recorded as soon as it exists, so a
+ * repeats nothing, and skips what has not changed: a product whose field
+ * already holds its path, a collection already titled as its type. An
+ * automatic run (queued by a change once the menu exists) claims the run
+ * the way a press does, and waits its turn behind one that is moving. Each collection is recorded as soon as it exists, so a
  * failure part way never makes a duplicate. A refusal Shopify explains is
  * shown to the merchant and not retried; anything else is retried.
  */
 export async function handleTypeMenuSync(job: Job<unknown>): Promise<void> {
-  const { shopDomain, requestedBy } = typeMenuSyncJobSchema.parse(job.data);
+  const { shopDomain, requestedBy, automatic } = typeMenuSyncJobSchema.parse(
+    job.data,
+  );
   const principal = serviceToken(shopDomain, "type-menu-sync");
   const log = getLogger();
+
+  if (automatic) {
+    const before = await getTypeMenu(principal);
+    if (!before?.menuId) return;
+    const { started } = await startTypeMenu(principal, null);
+    if (!started) {
+      // Another run is moving; this one goes after it and reads its result.
+      await queueTypeMenuUpdate(shopDomain);
+      return;
+    }
+  }
 
   try {
     const { admin } = await unauthenticated.admin(shopDomain);
@@ -128,10 +149,18 @@ export async function handleTypeMenuSync(job: Job<unknown>): Promise<void> {
     for (let start = 0; start < changes.length; start += BATCH) {
       const batch = changes.slice(start, start + BATCH);
       const outcome = await write(batch);
-      if (!outcome.ok)
+      const pathOf = (change: (typeof changes)[number]) => ({
+        productId: change.productId,
+        path: change.kind === "set" ? change.path : null,
+      });
+      if (outcome.ok) await recordTypeField(principal, batch.map(pathOf));
+      else
         for (const change of batch) {
           const single = await write([change]);
-          if (single.ok) continue;
+          if (single.ok) {
+            await recordTypeField(principal, [pathOf(change)]);
+            continue;
+          }
           if (single.errors.every((e) => OWNER_GONE.test(e.message))) {
             gone++;
             continue;
@@ -161,6 +190,19 @@ export async function handleTypeMenuSync(job: Job<unknown>): Promise<void> {
       const previous = recorded[type.id];
       const existing =
         previous && alive.has(previous.collectionId) ? previous : null;
+      done++;
+      // Its condition is the type's own id on the same field, so a
+      // collection already titled as the type needs nothing. Rewriting it
+      // anyway made Shopify rebuild every collection on every run.
+      if (
+        existing?.sourceId &&
+        existing.title === type.name &&
+        state.definitionId === definitionId
+      ) {
+        collections[type.id] = existing;
+        if (done % 25 === 0) await updateTypeMenu(principal, { done });
+        continue;
+      }
       const collection = await upsertTypeCollection(admin, {
         existing,
         title: type.name,
@@ -169,8 +211,7 @@ export async function handleTypeMenuSync(job: Job<unknown>): Promise<void> {
       });
       if (!existing && publicationId)
         await publishCollection(admin, collection.collectionId, publicationId);
-      collections[type.id] = collection;
-      done++;
+      collections[type.id] = { ...collection, title: type.name };
       // Recorded as it goes, with the ones not reached yet kept, so a
       // failure part way leaves nothing this app made unaccounted for.
       await updateTypeMenu(principal, {

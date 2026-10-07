@@ -34,7 +34,8 @@ import { readPortal } from "~/web/lib/sources.server";
  * source): which sources' new products the export portal's AI sorts into
  * the store's product types — and whether it also fills the attributes
  * those types need — as they arrive. What it suggests waits on Review for
- * a person, like every AI autofill (docs/attributes.md § AI autofill).
+ * a person, like every AI autofill (docs/attributes.md § AI autofill), or,
+ * where a source is set to, a confident suggestion is applied at once.
  *
  * The sources are the portal's, read as the page opens; the switches are
  * this app's, one row per source, saved as each is changed.
@@ -44,6 +45,26 @@ const FILL_OPTIONS = [
   { value: "attributes", label: "Product type and attributes" },
   { value: "type", label: "Product type only" },
 ];
+
+const APPLY_OPTIONS = [
+  { value: "auto", label: "Apply when confident" },
+  { value: "review", label: "Wait for review" },
+];
+
+type Setting = {
+  enabled: boolean;
+  fillAttributes: boolean;
+  autoApply: boolean;
+};
+
+/** The setting as posted, or as it is about to be while a save is in flight. */
+function settingOf(formData: FormData): Setting {
+  return {
+    enabled: formData.get("enabled") === "true",
+    fillAttributes: formData.get("fillAttributes") !== "false",
+    autoApply: formData.get("autoApply") === "true",
+  };
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -89,10 +110,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const sourceId = String(formData.get("sourceId") ?? "").trim();
   if (sourceId === "" || sourceId.length > 200)
     return { ok: false as const, message: "No source was chosen." };
-  const setting = {
-    enabled: formData.get("enabled") === "true",
-    fillAttributes: formData.get("fillAttributes") !== "false",
-  };
+  const setting = settingOf(formData);
   await setSourceAutofill(principal, sourceId, setting, actor);
   await appendEvent(principal, {
     entityType: "export_source",
@@ -102,9 +120,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   return {
     ok: true as const,
-    message: setting.enabled
-      ? "New products from this source will be categorized."
-      : "AI categorization is off for this source.",
+    message: !setting.enabled
+      ? "AI categorization is off for this source."
+      : setting.autoApply
+        ? "New products from this source will be categorized and confident suggestions applied."
+        : "New products from this source will be categorized.",
   };
 };
 
@@ -217,19 +237,25 @@ export default function SourceCategorization() {
           <s-section>
             <LearnMore label="How AI categorization works">
               <s-paragraph>
-                The export portal tags every product a source holds for review
-                with the source it came from. When Shopify reports such a
-                product created and its source is switched on here, the product
-                is sent to the portal&apos;s AI with your product types — as
-                full paths, such as Windsurf › Sails › Wave sails — and, for the
-                type it picks, the attributes that are still empty.
+                The export portal tags every product a source creates with the
+                source it came from. When Shopify reports such a product created
+                and its source is switched on here, the product is sent to the
+                portal&apos;s AI with your product types — as full paths, such
+                as Windsurf › Sails › Wave sails — and, for the type it picks,
+                the attributes that are still empty.
               </s-paragraph>
               <s-paragraph>
-                Only sources whose new products wait for review are recognised,
-                because the tag is what says which source a product came from.
-                Turn on{" "}
-                <s-text type="strong">Hold new products for review</s-text> in a
-                source&apos;s settings to use it there.
+                With <s-text type="strong">Apply when confident</s-text>, a
+                suggestion is applied as soon as it is made when the AI is at
+                least 80% sure of the type, or when the product already had its
+                type and only values were suggested. Anything less sure waits on
+                Review. With <s-text type="strong">Wait for review</s-text>,
+                every suggestion waits for you.
+              </s-paragraph>
+              <s-paragraph>
+                Products a source created before the portal tagged every product
+                carry no source, so they are not recognised; categorize them
+                from Products with Autofill with AI.
               </s-paragraph>
               <s-paragraph>
                 The AI may answer that no type fits; it never forces one. Each
@@ -293,13 +319,10 @@ function SourceRowView({
   first: boolean;
 }) {
   const fetcher = useFetcher<typeof action>();
-  const pending = fetcher.formData;
-  const enabled = pending
-    ? pending.get("enabled") === "true"
-    : source.setting.enabled;
-  const fillAttributes = pending
-    ? pending.get("fillAttributes") !== "false"
-    : source.setting.fillAttributes;
+  const setting = fetcher.formData
+    ? settingOf(fetcher.formData)
+    : source.setting;
+  const { enabled, fillAttributes, autoApply } = setting;
   const result = fetcher.data;
 
   useEffect(() => {
@@ -311,15 +334,18 @@ function SourceRowView({
       shopify.toast.show(result.message);
   }, [fetcher.state, result]);
 
-  const save = (next: { enabled: boolean; fillAttributes: boolean }) =>
+  const save = (change: Partial<Setting>) => {
+    const next = { ...setting, ...change };
     fetcher.submit(
       {
         sourceId: source.id,
         enabled: String(next.enabled),
         fillAttributes: String(next.fillAttributes),
+        autoApply: String(next.autoApply),
       },
       { method: "post", action: SOURCE_ROUTES.categorization },
     );
+  };
 
   const subtitle = [source.kindLabel, source.destination]
     .filter(Boolean)
@@ -337,7 +363,7 @@ function SourceRowView({
           })}
     >
       <s-grid
-        gridTemplateColumns="@container (inline-size <= 560px) 1fr auto, 1fr auto auto"
+        gridTemplateColumns="@container (inline-size <= 720px) 1fr auto, 1fr auto auto auto"
         gap="base"
         alignItems="center"
       >
@@ -358,19 +384,29 @@ function SourceRowView({
             value={fillAttributes ? "attributes" : "type"}
             options={FILL_OPTIONS}
             onChange={(value) =>
-              save({ enabled: true, fillAttributes: value === "attributes" })
+              save({ fillAttributes: value === "attributes" })
             }
           />
         ) : (
           <s-text color="subdued">Off</s-text>
         )}
+        {enabled ? (
+          <Dropdown
+            name={`apply-${source.id}`}
+            label="When to apply"
+            hideLabel
+            value={autoApply ? "auto" : "review"}
+            options={APPLY_OPTIONS}
+            onChange={(value) => save({ autoApply: value === "auto" })}
+          />
+        ) : (
+          <span />
+        )}
         <s-switch
           label={`Categorize new products from ${source.name}`}
           labelAccessibilityVisibility="exclusive"
           checked={enabled}
-          onChange={(event) =>
-            save({ enabled: event.currentTarget.checked, fillAttributes })
-          }
+          onChange={(event) => save({ enabled: event.currentTarget.checked })}
           {...(disabled && !enabled ? { disabled: true } : {})}
         />
       </s-grid>

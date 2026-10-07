@@ -16,7 +16,10 @@ import {
   listAutofills,
   readyAutofillProductIds,
 } from "~/adapters/db/repositories/product-autofill.server";
-import { autofillAvailability } from "~/adapters/products/autofill.server";
+import {
+  autofillAvailability,
+  requestAutofillAll,
+} from "~/adapters/products/autofill.server";
 
 import {
   PRODUCT_STATUS_FILTERS,
@@ -148,10 +151,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-/** Autofill and apply on the selected products, as on Sources › Review. */
+/**
+ * Autofill and apply on the selected products, as on Sources › Review; or
+ * autofill every product the AI has not been asked about yet.
+ */
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const formData = await request.formData();
+  if (formData.get("intent") === "autofill-all") {
+    const principal = principalFromSession(session);
+    const available = await autofillAvailability(principal);
+    if (!available.ok) return { ok: false, message: available.message };
+    const count = await requestAutofillAll(
+      principal,
+      actorFromSession(session),
+      {
+        fillAttributes: true,
+        autoApply: formData.get("autoApply") === "true",
+      },
+    );
+    return count === 0
+      ? {
+          ok: false,
+          message:
+            "The AI has already been asked about every product. Use Autofill with AI on selected products to ask again.",
+        }
+      : {
+          ok: true,
+          message: `Asking the AI about ${count} ${count === 1 ? "product" : "products"}, ten at a time. Each shows its suggestion when it is ready.`,
+        };
+  }
   const ids = String(formData.get("ids") ?? "")
     .split(",")
     .map((id) => id.trim())
@@ -361,6 +390,16 @@ export default function Products() {
 
   return (
     <s-page heading="Products" inlineSize="large">
+      {autofillAvailable ? (
+        <s-button
+          slot="secondary-actions"
+          icon="wand"
+          command="--show"
+          commandFor="autofill-all"
+        >
+          Autofill all with AI
+        </s-button>
+      ) : null}
       {result && !result.ok ? (
         <s-banner tone="critical" heading="That did not work">
           <s-paragraph>{result.message}</s-paragraph>
@@ -648,7 +687,62 @@ export default function Products() {
             : []),
         ]}
       />
+      <AutofillAllModal
+        onConfirm={(autoApply) =>
+          void fetcher.submit(
+            { intent: "autofill-all", autoApply: String(autoApply) },
+            { method: "post" },
+          )
+        }
+      />
     </s-page>
+  );
+}
+
+/**
+ * "Autofill all": every product the AI has not been asked about yet, and
+ * whether a confident suggestion is applied at once or waits on AI review.
+ */
+function AutofillAllModal({
+  onConfirm,
+}: {
+  onConfirm: (autoApply: boolean) => void;
+}) {
+  const [autoApply, setAutoApply] = useState(true);
+  return (
+    <s-modal id="autofill-all" heading="Autofill all products with AI">
+      <s-stack direction="block" gap="base">
+        <s-paragraph>
+          The AI suggests a product type and fills empty attributes for every
+          product it has not been asked about yet, ten at a time. Products
+          with a suggestion waiting, applied or discarded are skipped; ones
+          that failed are asked again. A large catalogue takes a while; you
+          can leave this page.
+        </s-paragraph>
+        <s-checkbox
+          label="Apply automatically when the AI is confident"
+          details="80% sure of the type or more. Anything less sure waits in AI review."
+          checked={autoApply}
+          onChange={(event) => setAutoApply(event.currentTarget.checked)}
+        />
+      </s-stack>
+      <s-button
+        slot="primary-action"
+        variant="primary"
+        command="--hide"
+        commandFor="autofill-all"
+        onClick={() => onConfirm(autoApply)}
+      >
+        Autofill all
+      </s-button>
+      <s-button
+        slot="secondary-actions"
+        command="--hide"
+        commandFor="autofill-all"
+      >
+        Cancel
+      </s-button>
+    </s-modal>
   );
 }
 

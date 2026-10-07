@@ -1,8 +1,12 @@
 import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 
 import { assignType } from "~/adapters/db/repositories/product-type-assignment.server";
-import { getTypeMenu } from "~/adapters/db/repositories/type-menu.server";
+import {
+  getTypeMenu,
+  recordTypeField,
+} from "~/adapters/db/repositories/type-menu.server";
 import { getLogger } from "~/adapters/observability/logger.server";
+import { requestTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import { writeMetafields } from "~/adapters/shopify/product-workspace";
 import { MENU_TYPE_FIELD, typePath } from "~/domain/attributes/menu";
 import type { AttributeSchema } from "~/domain/attributes/types";
@@ -36,8 +40,8 @@ export async function chooseProductType(
 /**
  * Once the store menu exists, a chosen type moves the product into that
  * type's collection at once rather than at the next menu update. The choice
- * itself is already saved, so a refusal here is logged, not shown; the next
- * update writes it again.
+ * itself is already saved, so a refusal here is logged, not shown, and an
+ * update is queued to write it again.
  */
 async function moveIntoMenu(
   admin: AdminApiContext,
@@ -61,12 +65,16 @@ async function moveIntoMenu(
       ],
       [],
     );
-    if (!outcome.ok)
-      getLogger().warn(
-        { productId, errors: outcome.errors },
-        "Menu type field not written",
-      );
+    if (outcome.ok) {
+      await recordTypeField(principal, [{ productId, path }]);
+      return;
+    }
+    getLogger().warn(
+      { productId, errors: outcome.errors },
+      "Menu type field not written",
+    );
   } catch (error) {
     getLogger().warn({ err: error, productId }, "Menu type field not written");
   }
+  await requestTypeMenuUpdate(principal);
 }

@@ -11,12 +11,21 @@ import { shopDomainOf, type Principal } from "~/domain/types";
 export interface SourceAutofillSetting {
   enabled: boolean;
   fillAttributes: boolean;
+  /** Apply a confident suggestion at once (docs/attributes.md § AI autofill). */
+  autoApply: boolean;
 }
 
 export const SOURCE_AUTOFILL_OFF: SourceAutofillSetting = {
   enabled: false,
   fillAttributes: true,
+  autoApply: false,
 };
+
+const SELECT = {
+  enabled: true,
+  fillAttributes: true,
+  autoApply: true,
+} as const;
 
 const scoped = (principal: Principal) => ({
   shop: { domain: shopDomainOf(principal) },
@@ -27,14 +36,9 @@ export async function listSourceAutofill(
 ): Promise<Map<string, SourceAutofillSetting>> {
   const rows = await prisma.sourceAutofill.findMany({
     where: scoped(principal),
-    select: { sourceId: true, enabled: true, fillAttributes: true },
+    select: { sourceId: true, ...SELECT },
   });
-  return new Map(
-    rows.map((row) => [
-      row.sourceId,
-      { enabled: row.enabled, fillAttributes: row.fillAttributes },
-    ]),
-  );
+  return new Map(rows.map(({ sourceId, ...setting }) => [sourceId, setting]));
 }
 
 export async function getSourceAutofill(
@@ -43,7 +47,7 @@ export async function getSourceAutofill(
 ): Promise<SourceAutofillSetting> {
   const row = await prisma.sourceAutofill.findFirst({
     where: { ...scoped(principal), sourceId },
-    select: { enabled: true, fillAttributes: true },
+    select: SELECT,
   });
   return row ?? SOURCE_AUTOFILL_OFF;
 }

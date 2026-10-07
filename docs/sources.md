@@ -350,7 +350,9 @@ in this app knowing it. The contract between the two is Shopify tags, and
 nothing about a product under review is stored in this app.
 
 **What the portal does in review mode.** A product the run creates (not one
-it updates) is created with status `DRAFT` and two tags:
+it updates) is created with status `DRAFT` and two tags (outside review
+mode it is created `ACTIVE` with `portal-source:<id>` alone, so its source
+is known for AI categorization):
 
 - `awaiting-review`, which puts it in the queue;
 - `portal-source:<sourceId>`, which says which source it came from.
@@ -445,11 +447,12 @@ The portal's side is `t4a-partner-portal-api/docs/sources-api-ai.md`,
 Whether a source's new products are put to AI autofill as they arrive is
 this app's setting, not the portal's: it is about this app's product types.
 `source_autofill` holds one row per shop and portal source id (`enabled`,
-`fillAttributes`); no row is off.
+`fillAttributes`, `autoApply`); no row is off.
 
 - **Where.** **Sources › AI categorization** (`/app/sources/categorization`,
   also in the Sources header) lists every source with a switch and, while
   on, what to fill — *Product type and attributes* or *Product type only* —
+  and when to apply it — *Apply when confident* or *Wait for review* —
   each row saved as it changes. It opens with what the feature needs (the
   portal connected; product types to sort into, and how many have
   attributes) and how many suggestions wait on Review. Each source's page
@@ -459,13 +462,15 @@ this app's setting, not the portal's: it is about this app's product types.
   product carrying `portal-source:<id>` whose source is on is queued with
   `requestAutofill`, recorded as requested by `source:<id>`, with the
   source's choice of what to fill; the suggestion waits for review like
-  every other (docs/attributes.md § AI autofill). A source that is off, a
+  every other, unless the source applies confident suggestions on its own
+  (`autoApply`, docs/attributes.md § AI autofill). A source that is off, a
   product without the tag, or a portal that cannot be asked is passed over
   quietly.
-- **Which products.** Only products the portal tags with their source,
-  which today are those a source holds for review. A source that publishes
-  straight away gives no tag, so its products are autofilled from Products
-  or a product page instead. The page says so.
+- **Which products.** Every product a source creates, once the portal tags
+  each created product with `portal-source:<id>` whether or not it is held
+  for review (the portal's `sources-api.md` § Review before publish).
+  Products created before that carry no tag and are autofilled from
+  Products or a product page instead. The page says so.
 
 ## Required scopes
 

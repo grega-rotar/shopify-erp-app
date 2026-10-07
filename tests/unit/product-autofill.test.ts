@@ -7,6 +7,7 @@ import type {
 import {
   attributesToFill,
   chosenType,
+  confidentEnough,
   inputsWithSuggestions,
   plainText,
   suggestedValues,
@@ -189,5 +190,58 @@ describe("the rest", () => {
       plainText("<p>Wave&nbsp;sail</p><ul><li>5.3 m²</li></ul><script>x</script>"),
     ).toBe("Wave sail\n5.3 m²");
     expect(plainText("a".repeat(10), 4)).toBe("aaaa");
+  });
+});
+
+describe("applying without a person", () => {
+  const base = { typeId: "wave", values: [] as unknown[] };
+
+  it("needs the categorizer to be sure of a type it chose", () => {
+    expect(
+      confidentEnough({
+        ...base,
+        typeOrigin: "suggested",
+        typeConfidence: 0.8,
+      }),
+    ).toBe(true);
+    expect(
+      confidentEnough({
+        ...base,
+        typeOrigin: "suggested",
+        typeConfidence: 0.79,
+      }),
+    ).toBe(false);
+    expect(
+      confidentEnough({
+        ...base,
+        typeOrigin: "suggested",
+        typeConfidence: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("fills values for a type the product already had", () => {
+    expect(
+      confidentEnough({
+        ...base,
+        typeOrigin: "kept",
+        typeConfidence: null,
+        values: [{}],
+      }),
+    ).toBe(true);
+    expect(
+      confidentEnough({ ...base, typeOrigin: "kept", typeConfidence: null }),
+    ).toBe(false);
+  });
+
+  it("never applies 'no type fits'", () => {
+    expect(
+      confidentEnough({
+        typeId: null,
+        typeOrigin: "suggested",
+        typeConfidence: 0.95,
+        values: [],
+      }),
+    ).toBe(false);
   });
 });

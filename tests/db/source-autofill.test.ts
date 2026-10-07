@@ -33,23 +33,25 @@ describeDatabase("source autofill settings", () => {
     expect(await getSourceAutofill(tenant.principal, "sc_1")).toEqual({
       enabled: false,
       fillAttributes: true,
+      autoApply: false,
     });
 
     await setSourceAutofill(
       tenant.principal,
       "sc_1",
-      { enabled: true, fillAttributes: false },
+      { enabled: true, fillAttributes: false, autoApply: false },
       "staff:1",
     );
     await setSourceAutofill(
       tenant.principal,
       "sc_1",
-      { enabled: true, fillAttributes: true },
+      { enabled: true, fillAttributes: true, autoApply: true },
       "staff:2",
     );
     expect(await getSourceAutofill(tenant.principal, "sc_1")).toEqual({
       enabled: true,
       fillAttributes: true,
+      autoApply: true,
     });
     expect([...(await listSourceAutofill(tenant.principal)).keys()]).toEqual([
       "sc_1",

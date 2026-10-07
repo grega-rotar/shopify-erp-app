@@ -24,6 +24,9 @@ const state = vi.hoisted(() => ({
   legacyRemoved: 0,
   matched: [] as string[],
   extraProducts: [] as string[],
+  recorded: [] as Array<{ productId: string; path: string[] | null }>,
+  claimed: true,
+  requeued: 0,
 }));
 
 vi.mock("~/adapters/shopify/shopify.server", () => ({
@@ -48,6 +51,18 @@ vi.mock("~/adapters/db/repositories/type-menu.server", () => ({
       current: null,
     })),
   chosenTypes: async () => new Map(),
+  recordTypeField: async (
+    _: unknown,
+    changes: Array<{ productId: string; path: string[] | null }>,
+  ) => {
+    state.recorded.push(...changes);
+  },
+  startTypeMenu: async () => ({ started: state.claimed }),
+}));
+vi.mock("~/adapters/products/type-menu-updates.server", () => ({
+  queueTypeMenuUpdate: async () => {
+    state.requeued++;
+  },
 }));
 vi.mock("~/adapters/shopify/product-workspace", () => ({
   writeMetafields: async (
@@ -124,6 +139,9 @@ beforeEach(() => {
   state.extraProducts = [];
   state.legacyRemoved = 0;
   state.matched = [];
+  state.recorded = [];
+  state.claimed = true;
+  state.requeued = 0;
 });
 
 describe("making the store menu", () => {
@@ -176,6 +194,84 @@ describe("making the store menu", () => {
     expect(state.created).toContain("Wave sails");
     expect(state.published).not.toContain("c-old-sails");
     expect(state.menus[0]?.menuId).toBe("menu-1");
+  });
+
+  it("records what it wrote, so the next run writes only what moved", async () => {
+    await handleTypeMenuSync(job);
+
+    expect(state.recorded).toEqual([
+      { productId: "p1", path: ["all", "windsurf", "sails", "wave"] },
+    ]);
+  });
+
+  it("leaves a collection already titled as its type alone", async () => {
+    state.row = {
+      menuId: "menu-1",
+      definitionId: "def-1",
+      collections: {
+        sails: { collectionId: "c-sails", sourceId: "s0", title: "Sails" },
+        boards: { collectionId: "c-boards", sourceId: "s0", title: "Old" },
+      },
+    };
+    state.alive = new Set(["c-sails", "c-boards"]);
+
+    await handleTypeMenuSync(job);
+
+    expect(state.matched).not.toContain("sails");
+    expect(state.updated).toEqual(["Boards"]);
+    expect(state.patches.at(-1)).toMatchObject({
+      collections: expect.objectContaining({
+        sails: expect.objectContaining({ collectionId: "c-sails" }),
+        boards: expect.objectContaining({ title: "Boards" }),
+      }),
+    });
+  });
+
+  it("rewrites every collection when the type field was made again", async () => {
+    state.row = {
+      menuId: "menu-1",
+      definitionId: "def-old",
+      collections: {
+        sails: { collectionId: "c-sails", sourceId: "s0", title: "Sails" },
+      },
+    };
+    state.alive = new Set(["c-sails"]);
+
+    await handleTypeMenuSync(job);
+
+    expect(state.updated).toEqual(["Sails"]);
+  });
+
+  it("does nothing automatically before the menu has been made", async () => {
+    await handleTypeMenuSync({
+      data: { shopDomain: "shop.myshopify.com", automatic: true },
+    } as Job<unknown>);
+
+    expect(state.patches).toEqual([]);
+    expect(state.menus).toEqual([]);
+  });
+
+  it("waits behind a run that is moving rather than racing it", async () => {
+    state.row = { menuId: "menu-1", collections: {} };
+    state.claimed = false;
+
+    await handleTypeMenuSync({
+      data: { shopDomain: "shop.myshopify.com", automatic: true },
+    } as Job<unknown>);
+
+    expect(state.requeued).toBe(1);
+    expect(state.menus).toEqual([]);
+  });
+
+  it("updates the menu automatically once it exists", async () => {
+    state.row = { menuId: "menu-1", collections: {} };
+
+    await handleTypeMenuSync({
+      data: { shopDomain: "shop.myshopify.com", automatic: true },
+    } as Job<unknown>);
+
+    expect(state.menus[0]?.menuId).toBe("menu-1");
+    expect(state.patches.at(-1)).toMatchObject({ status: "done" });
   });
 
   it("skips products Shopify has deleted and says so", async () => {

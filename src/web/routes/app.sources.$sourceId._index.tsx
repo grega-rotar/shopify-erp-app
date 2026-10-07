@@ -306,7 +306,7 @@ function SourceOverview({
   source: Source;
   runs: Run[];
   awaitingReview: number;
-  autofill: { enabled: boolean; fillAttributes: boolean };
+  autofill: { enabled: boolean; fillAttributes: boolean; autoApply: boolean };
   note: string | null;
   fetcher: ReturnType<typeof useFetcher<typeof action>>;
 }) {

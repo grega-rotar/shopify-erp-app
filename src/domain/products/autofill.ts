@@ -310,3 +310,31 @@ export const autofillValuesCodec = z.array(
     display: z.string(),
   }),
 );
+
+/**
+ * How sure the categorizer must be of a type it chose for a source set to
+ * apply on its own; below it, the suggestion waits for a person.
+ */
+export const AUTO_APPLY_CONFIDENCE = 0.8;
+
+/**
+ * Whether a suggestion may be applied without a person (docs/attributes.md
+ * § AI autofill). A type the product already had needs no confidence, so
+ * its values go in; a type the categorizer chose must be at or above
+ * `AUTO_APPLY_CONFIDENCE`. A suggestion with nothing to apply is left as
+ * it is.
+ */
+export function confidentEnough(suggestion: {
+  typeId: string | null;
+  typeOrigin: "suggested" | "kept" | null;
+  typeConfidence: number | null;
+  values: readonly unknown[];
+}): boolean {
+  if (suggestion.typeId === null) return false;
+  if (suggestion.typeOrigin === "kept") return suggestion.values.length > 0;
+  return (
+    suggestion.typeOrigin === "suggested" &&
+    suggestion.typeConfidence !== null &&
+    suggestion.typeConfidence >= AUTO_APPLY_CONFIDENCE
+  );
+}

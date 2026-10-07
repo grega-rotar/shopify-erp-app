@@ -13,6 +13,7 @@ import {
   recordVariantOutcome,
 } from "~/adapters/db/repositories/sale-campaign.server";
 import { getLogger } from "~/adapters/observability/logger.server";
+import { requestTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import { recordVariantEvent } from "~/adapters/sales/events.server";
 import { reconcileDynamicMembership } from "~/adapters/sales/membership.server";
 import { handleExternalChange } from "~/adapters/sales/writer.server";
@@ -85,6 +86,8 @@ export async function handleSaleProductEvent(job: Job<unknown>): Promise<void> {
 
   const update = parseProductUpdate(payload);
   const { changed } = await applyProductUpdate(principal, update, now);
+  // A new product or a changed product type may move it in the store menu.
+  if (changed) await requestTypeMenuUpdate(principal);
 
   /*
    * 2. Owned variants: is the price still what the campaign wrote?

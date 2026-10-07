@@ -322,7 +322,7 @@ export default function StoreMenu() {
         <s-section heading="Store menu from product types">
           <s-stack direction="block" gap="base">
             <s-text color="subdued">
-              {`One press turns the product type tree into a menu called “${TYPE_MENU_TITLE}” for your store's header. Each entry opens a collection of the products of that type and every type beneath it; the collections fill themselves as products change type.`}
+              {`One press turns the product type tree into a menu called “${TYPE_MENU_TITLE}” for your store's header. Each entry opens a collection of the products of that type and every type beneath it; the collections fill themselves as products change type. Once made, the menu keeps itself current: a minute after the tree or a product's type changes, it updates on its own.`}
             </s-text>
             {types === 0 ? (
               <s-text color="subdued">
@@ -381,8 +381,9 @@ export default function StoreMenu() {
               </s-paragraph>
               <s-paragraph>
                 The first time, Shopify asks you to approve managing menus and
-                publishing collections. Press the button again after a type
-                changes, or after products were given new types.
+                publishing collections. After that the menu updates itself when
+                the tree or a product&apos;s type changes; the button is there to
+                update it now.
               </s-paragraph>
             </LearnMore>
           </s-stack>

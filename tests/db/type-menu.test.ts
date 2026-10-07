@@ -2,7 +2,9 @@ import { afterEach, expect, it } from "vitest";
 
 import { prisma } from "~/adapters/db/client.server";
 import {
+  catalogueForMenu,
   getTypeMenu,
+  recordTypeField,
   startTypeMenu,
   updateTypeMenu,
 } from "~/adapters/db/repositories/type-menu.server";
@@ -17,7 +19,9 @@ import {
 /**
  * The store menu's row (docs/attributes.md § Store menu): one run at a time
  * per shop, what earlier runs made kept across runs, and a run that died
- * long ago no longer in the way.
+ * long ago no longer in the way; and the catalogue's copy of the type
+ * field kept in step with what a run wrote, so the next run writes only
+ * what moved.
  */
 describeDatabase("store menu runs", () => {
   const tenants: TestTenant[] = [];
@@ -79,5 +83,44 @@ describeDatabase("store menu runs", () => {
     expect(await startTypeMenu(tenant.principal, null)).toEqual({
       started: true,
     });
+  });
+
+  it("records a written path and a cleared one, keeping other fields", async () => {
+    const tenant = await createTenant("type-menu");
+    tenants.push(tenant);
+    const other = {
+      "custom.brand": { type: "single_line_text_field", value: "Point-7" },
+    };
+    for (const id of ["gid://shopify/Product/1", "gid://shopify/Product/2"])
+      await prisma.catalogProduct.create({
+        data: {
+          shopId: tenant.shopId,
+          shopifyProductId: id,
+          title: id,
+          metafields: {
+            ...other,
+            "recharge.product_type_path": {
+              type: "list.single_line_text_field",
+              value: JSON.stringify(["all", "old"]),
+            },
+          },
+        },
+      });
+
+    await recordTypeField(tenant.principal, [
+      { productId: "gid://shopify/Product/1", path: ["all", "wave"] },
+      { productId: "gid://shopify/Product/2", path: null },
+    ]);
+
+    const menu = await catalogueForMenu(tenant.principal);
+    expect(menu.map((p) => [p.productId, p.current])).toEqual([
+      ["gid://shopify/Product/1", ["all", "wave"]],
+      ["gid://shopify/Product/2", null],
+    ]);
+    const kept = await prisma.catalogProduct.findMany({
+      where: { shopId: tenant.shopId },
+      select: { metafields: true },
+    });
+    for (const row of kept) expect(row.metafields).toMatchObject(other);
   });
 });

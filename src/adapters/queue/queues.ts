@@ -102,6 +102,14 @@ export function typeMenuKey(shopDomain: string): string {
   return `type-menu:${shopDomain}`;
 }
 
+/**
+ * One automatic menu update waiting per shop, apart from the button's key:
+ * a press must never be swallowed by an update still waiting out its delay.
+ */
+export function typeMenuAutoKey(shopDomain: string): string {
+  return `type-menu-auto:${shopDomain}`;
+}
+
 export function translationRemoveKey(shopDomain: string, locale: string): string {
   return `translation-remove:${shopDomain}:${locale}`;
 }

@@ -3,6 +3,7 @@ import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
 import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import { appendEvent } from "~/adapters/db/repositories/event-log.server";
 import {
+  countUnaskedProducts,
   decideAutofill,
   failAutofill,
   getAutofill,
@@ -35,6 +36,7 @@ import {
 import {
   attributesToFill,
   chosenType,
+  confidentEnough,
   inputsWithSuggestions,
   plainText,
   suggestedValues,
@@ -59,6 +61,13 @@ export const AUTOFILL_ENGINE = "export-portal";
 /** What to suggest: the type always, the type's attribute values unless told not to. */
 export interface AutofillOptions {
   fillAttributes: boolean;
+  /**
+   * Apply a confident suggestion at once (`confidentEnough`) instead of
+   * leaving it for review: a source set to. What is not confident waits.
+   */
+  autoApply?: boolean;
+  /** Who asked, recorded as who applied an automatic suggestion. */
+  requestedBy?: string | null;
 }
 
 /** The model takes seconds per call; a job waits, a page does not. */
@@ -244,14 +253,22 @@ export async function suggestAutofill(
           });
         }
       }
-      await saveAutofillSuggestion(principal, product.productId, {
+      const suggestion = {
         typeId,
-        typeOrigin: keptType ? "kept" : "suggested",
+        typeOrigin: keptType ? ("kept" as const) : ("suggested" as const),
         typeConfidence: keptType ? null : (guess?.confidence ?? null),
         typeReason: keptType ? null : (guess?.reason ?? null),
         values,
         engine: AUTOFILL_ENGINE,
-      });
+      };
+      await saveAutofillSuggestion(principal, product.productId, suggestion);
+      if (options.autoApply && confidentEnough(suggestion))
+        await applyAutomatically(
+          admin,
+          principal,
+          product.productId,
+          options.requestedBy ?? null,
+        );
     } catch (error) {
       log.warn(
         { err: error, productId: product.productId },
@@ -259,6 +276,39 @@ export async function suggestAutofill(
       );
       await failAutofill(principal, product.productId, failureText(error));
     }
+  }
+}
+
+/**
+ * A confident suggestion applied as a person's press of Apply would apply
+ * it: the type, then every suggested value still empty. When Shopify
+ * refuses, the suggestion stays waiting on Review rather than failing, since
+ * it is still a good suggestion.
+ */
+async function applyAutomatically(
+  admin: AdminApiContext,
+  principal: Principal,
+  productId: string,
+  actor: string | null,
+): Promise<void> {
+  try {
+    const outcome = await applyAutofill(admin, principal, {
+      productId,
+      actor,
+      keepType: true,
+      keepValues: null,
+      automatic: true,
+    });
+    if (!outcome.ok)
+      getLogger().warn(
+        { productId, message: outcome.message },
+        "Autofill not applied automatically; left for review",
+      );
+  } catch (error) {
+    getLogger().warn(
+      { err: error, productId },
+      "Autofill not applied automatically; left for review",
+    );
   }
 }
 
@@ -285,6 +335,8 @@ export async function applyAutofill(
     typeId?: string;
     /** Input keys of the values to apply; null keeps them all. */
     keepValues: ReadonlySet<string> | null;
+    /** Applied by a source's setting, not by a person's press. */
+    automatic?: boolean;
   },
 ): Promise<ApplyOutcome> {
   const { productId, actor } = input;
@@ -357,6 +409,7 @@ export async function applyAutofill(
       typeOverridden: typeApplied && chosenTypeId !== state.typeId,
       values: written,
       engine: state.engine,
+      ...(input.automatic ? { automatic: true } : {}),
     },
   });
 
@@ -388,6 +441,28 @@ export async function discardAutofill(
         ok: false,
         message: "There is no suggestion waiting for this product. Reload to see where it stands.",
       };
+}
+
+/**
+ * Asks about every catalogue product the AI has not been asked about yet,
+ * a pass of ten at a time (the job walks the catalogue). Returns how many
+ * that is now; zero queues nothing.
+ */
+export async function requestAutofillAll(
+  principal: Principal,
+  requestedBy: string | null,
+  options: AutofillOptions,
+): Promise<number> {
+  const count = await countUnaskedProducts(principal);
+  if (count === 0) return 0;
+  await enqueue(QUEUES.productAutofill, {
+    shopDomain: shopDomainOf(principal),
+    all: { after: null },
+    fillAttributes: options.fillAttributes,
+    autoApply: options.autoApply ?? false,
+    requestedBy,
+  });
+  return count;
 }
 
 /** At most this many products per request; the job works through them ten at a time. */
@@ -423,6 +498,8 @@ export async function requestAutofill(
         shopDomain: shopDomainOf(principal),
         productIds: queued,
         fillAttributes: options.fillAttributes,
+        autoApply: options.autoApply ?? false,
+        requestedBy,
       });
     } catch (error) {
       // Marked queued a moment ago: without the job they would stay so.

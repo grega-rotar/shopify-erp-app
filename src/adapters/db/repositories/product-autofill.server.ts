@@ -306,3 +306,75 @@ export async function readyAutofillProductIds(
 ): Promise<string[]> {
   return (await readyIdsInCatalogue(principal)).slice(0, limit);
 }
+
+/**
+ * What says the AI has been asked about a product, or is being: such a
+ * product is passed over by "autofill all", so a second run resumes
+ * rather than asking again, and a suggestion waiting or decided is never
+ * overwritten. A failed one is asked again.
+ */
+const ASKED = ["queued", "running", "ready", "applied", "discarded"];
+
+/** Catalogue products read per look-up while walking it. */
+const WALK_PAGE = 200;
+
+/**
+ * The next products of the catalogue the AI has not been asked about,
+ * after `after` in product id order, and where the walk goes on from
+ * (null at the end). Read a pass at a time, so a product is marked queued
+ * only when its turn comes and never waits long enough to look lost.
+ */
+export async function nextUnaskedProducts(
+  principal: Principal,
+  after: string | null,
+  limit: number,
+): Promise<{ ids: string[]; next: string | null }> {
+  const shopId = await shopIdOf(principal);
+  const ids: string[] = [];
+  let cursor = after;
+  for (;;) {
+    const page = await prisma.catalogProduct.findMany({
+      where: {
+        shopId,
+        ...(cursor ? { shopifyProductId: { gt: cursor } } : {}),
+      },
+      select: { shopifyProductId: true },
+      orderBy: { shopifyProductId: "asc" },
+      take: WALK_PAGE,
+    });
+    if (page.length === 0) return { ids, next: null };
+    const asked = new Set(
+      (
+        await prisma.productAutofill.findMany({
+          where: {
+            shopId,
+            productId: { in: page.map((row) => row.shopifyProductId) },
+            status: { in: ASKED },
+          },
+          select: { productId: true },
+        })
+      ).map((row) => row.productId),
+    );
+    for (const { shopifyProductId: id } of page) {
+      cursor = id;
+      if (asked.has(id)) continue;
+      ids.push(id);
+      if (ids.length === limit) return { ids, next: cursor };
+    }
+    if (page.length < WALK_PAGE) return { ids, next: null };
+  }
+}
+
+/** How many catalogue products "autofill all" would ask about. */
+export async function countUnaskedProducts(
+  principal: Principal,
+): Promise<number> {
+  const shopId = await shopIdOf(principal);
+  const [total, asked] = await Promise.all([
+    prisma.catalogProduct.count({ where: { shopId } }),
+    prisma.productAutofill.count({
+      where: { shopId, status: { in: ASKED } },
+    }),
+  ]);
+  return Math.max(0, total - asked);
+}

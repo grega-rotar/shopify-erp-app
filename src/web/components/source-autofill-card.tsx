@@ -3,6 +3,12 @@ import { useFetcher } from "react-router";
 
 import { SOURCE_ROUTES } from "~/web/lib/sources";
 
+type Setting = {
+  enabled: boolean;
+  fillAttributes: boolean;
+  autoApply: boolean;
+};
+
 /**
  * A source's AI categorization in its sidebar (docs/sources.md § AI
  * categorization per source): on or off, and what it fills, changed in
@@ -14,16 +20,18 @@ export function SourceAutofillCard({
   setting,
 }: {
   sourceId: string;
-  setting: { enabled: boolean; fillAttributes: boolean };
+  setting: Setting;
 }) {
   const fetcher = useFetcher<{ ok: boolean; message: string }>();
   const pending = fetcher.formData;
-  const enabled = pending
-    ? pending.get("enabled") === "true"
-    : setting.enabled;
-  const fillAttributes = pending
-    ? pending.get("fillAttributes") !== "false"
-    : setting.fillAttributes;
+  const current: Setting = pending
+    ? {
+        enabled: pending.get("enabled") === "true",
+        fillAttributes: pending.get("fillAttributes") !== "false",
+        autoApply: pending.get("autoApply") === "true",
+      }
+    : setting;
+  const { enabled, fillAttributes, autoApply } = current;
 
   useEffect(() => {
     if (
@@ -34,15 +42,18 @@ export function SourceAutofillCard({
       shopify.toast.show(fetcher.data.message);
   }, [fetcher.state, fetcher.data]);
 
-  const save = (next: { enabled: boolean; fillAttributes: boolean }) =>
+  const save = (change: Partial<Setting>) => {
+    const next = { ...current, ...change };
     fetcher.submit(
       {
         sourceId,
         enabled: String(next.enabled),
         fillAttributes: String(next.fillAttributes),
+        autoApply: String(next.autoApply),
       },
       { method: "post", action: SOURCE_ROUTES.categorization },
     );
+  };
 
   return (
     <s-section heading="AI categorization">
@@ -52,9 +63,7 @@ export function SourceAutofillCard({
             <s-text type="strong">Categorize new products</s-text>
             <s-text color="subdued">
               {enabled
-                ? fillAttributes
-                  ? "Product type and attributes are suggested for review."
-                  : "The product type is suggested for review."
+                ? `${fillAttributes ? "Product type and attributes are" : "The product type is"} ${autoApply ? "applied when the AI is confident, otherwise suggested for review." : "suggested for review."}`
                 : "New products keep the type their source gives them."}
             </s-text>
           </s-stack>
@@ -62,19 +71,27 @@ export function SourceAutofillCard({
             label="Categorize new products"
             labelAccessibilityVisibility="exclusive"
             checked={enabled}
-            onChange={(event) =>
-              save({ enabled: event.currentTarget.checked, fillAttributes })
-            }
+            onChange={(event) => save({ enabled: event.currentTarget.checked })}
           />
         </s-grid>
         {enabled ? (
-          <s-checkbox
-            label="Also fill the type's attributes"
-            checked={fillAttributes}
-            onChange={(event) =>
-              save({ enabled: true, fillAttributes: event.currentTarget.checked })
-            }
-          />
+          <s-stack direction="block" gap="small-300">
+            <s-checkbox
+              label="Also fill the type's attributes"
+              checked={fillAttributes}
+              onChange={(event) =>
+                save({ fillAttributes: event.currentTarget.checked })
+              }
+            />
+            <s-checkbox
+              label="Apply automatically when the AI is confident"
+              details="80% sure of the type or more. Anything less sure waits on Review."
+              checked={autoApply}
+              onChange={(event) =>
+                save({ autoApply: event.currentTarget.checked })
+              }
+            />
+          </s-stack>
         ) : null}
         <s-link href={SOURCE_ROUTES.categorization}>Every source</s-link>
         {fetcher.data && !fetcher.data.ok ? (

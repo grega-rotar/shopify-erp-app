@@ -16,7 +16,12 @@ import { shopDomainOf, type Principal } from "~/domain/types";
 
 const collectionsCodec = z.record(
   z.string(),
-  z.object({ collectionId: z.string(), sourceId: z.string().nullable() }),
+  z.object({
+    collectionId: z.string(),
+    sourceId: z.string().nullable(),
+    /** The title it was given; a type renamed since needs an update. */
+    title: z.string().optional(),
+  }),
 );
 
 export type TypeCollections = z.infer<typeof collectionsCodec>;
@@ -209,6 +214,46 @@ export async function catalogueForMenu(
       current: raw === undefined ? null : pathOfValue(raw),
     };
   });
+}
+
+/**
+ * Keeps the catalogue's copy of the type field in step with what was just
+ * written to Shopify, so the next run compares against the truth and writes
+ * only what moved, not every product again until the next catalogue read.
+ */
+export async function recordTypeField(
+  principal: Principal,
+  changes: ReadonlyArray<{ productId: string; path: string[] | null }>,
+): Promise<void> {
+  if (changes.length === 0) return;
+  const field = `${MENU_TYPE_FIELD.namespace}.${MENU_TYPE_FIELD.key}`;
+  const rows = await prisma.catalogProduct.findMany({
+    where: {
+      shop: { domain: shopDomainOf(principal) },
+      shopifyProductId: { in: changes.map((c) => c.productId) },
+    },
+    select: { id: true, shopifyProductId: true, metafields: true },
+  });
+  const wanted = new Map(changes.map((c) => [c.productId, c.path]));
+  await prisma.$transaction(
+    rows.map((row) => {
+      const parsed = metafieldsCodec.safeParse(row.metafields ?? {});
+      const metafields: Record<string, unknown> = parsed.success
+        ? { ...parsed.data }
+        : {};
+      const path = wanted.get(row.shopifyProductId) ?? null;
+      if (path === null) delete metafields[field];
+      else
+        metafields[field] = {
+          type: MENU_TYPE_FIELD.type,
+          value: JSON.stringify(path),
+        };
+      return prisma.catalogProduct.update({
+        where: { id: row.id },
+        data: { metafields: metafields as Prisma.InputJsonObject },
+      });
+    }),
+  );
 }
 
 /** A list field's JSON value; anything unreadable counts as nothing there. */

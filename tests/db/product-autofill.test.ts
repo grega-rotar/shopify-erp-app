@@ -3,11 +3,13 @@ import { afterEach, expect, it } from "vitest";
 import { prisma } from "~/adapters/db/client.server";
 import {
   countReadyAutofills,
+  countUnaskedProducts,
   decideAutofill,
   failAutofill,
   getAutofill,
   listAutofills,
   markAutofillRunning,
+  nextUnaskedProducts,
   queueAutofills,
   saveAutofillSuggestion,
 } from "~/adapters/db/repositories/product-autofill.server";
@@ -124,6 +126,29 @@ describeDatabase("product autofill", () => {
     expect(await getAutofill(two.principal, P1)).toBeNull();
     expect(await decideAutofill(two.principal, P1, "applied", null)).toBe(
       false,
+    );
+  });
+
+  it("walks the catalogue past what the AI was already asked", async () => {
+    const tenant = await createTenant("autofill-walk");
+    tenants.push(tenant);
+    const ids = [1, 2, 3, 4, 5].map((n) => `gid://shopify/Product/${n}`);
+    for (const id of ids)
+      await prisma.catalogProduct.create({
+        data: { shopId: tenant.shopId, shopifyProductId: id, title: id },
+      });
+    // 2 has a suggestion waiting, 3 failed and is asked again.
+    await queueAutofills(tenant.principal, [ids[1]!, ids[2]!], "staff");
+    await saveAutofillSuggestion(tenant.principal, ids[1]!, suggestion);
+    await failAutofill(tenant.principal, ids[2]!, "No answer.");
+
+    expect(await countUnaskedProducts(tenant.principal)).toBe(4);
+    const first = await nextUnaskedProducts(tenant.principal, null, 2);
+    expect(first).toEqual({ ids: [ids[0], ids[2]], next: ids[2] });
+    const second = await nextUnaskedProducts(tenant.principal, first.next, 2);
+    expect(second).toEqual({ ids: [ids[3], ids[4]], next: ids[4] });
+    expect(await nextUnaskedProducts(tenant.principal, second.next, 2)).toEqual(
+      { ids: [], next: null },
     );
   });
 });

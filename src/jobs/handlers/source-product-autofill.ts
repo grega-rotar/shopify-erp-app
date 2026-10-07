@@ -15,8 +15,9 @@ import { serviceToken } from "~/domain/types";
  * products/create, for AI categorization per source (docs/sources.md § AI
  * categorization per source). A product the export portal created carries
  * `portal-source:<id>`; when that source is switched on here, the product
- * is put to AI autofill — suggestions only, waiting for review like any
- * other. Every other product is left alone.
+ * is put to AI autofill: suggestions wait for review like any other, or,
+ * for a source set to apply on its own, a confident one is applied at once.
+ * Every other product is left alone.
  *
  * Quiet by design: a source switched off, a portal not connected or a
  * product without the tag is not a failure, only a product the setting
@@ -44,5 +45,6 @@ export async function handleSourceProductAutofill(
   }
   await requestAutofill(principal, [product.productId], `source:${sourceId}`, {
     fillAttributes: setting.fillAttributes,
+    autoApply: setting.autoApply,
   });
 }

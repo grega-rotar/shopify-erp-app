@@ -13,6 +13,7 @@ import {
 import { raiseException } from "~/adapters/db/repositories/exception.server";
 import { listDynamicActiveCampaigns } from "~/adapters/db/repositories/sale-campaign.server";
 import { getLogger } from "~/adapters/observability/logger.server";
+import { requestTypeMenuUpdate } from "~/adapters/products/type-menu-updates.server";
 import { enqueue } from "~/adapters/queue/boss.server";
 import { QUEUES, catalogueSnapshotKey } from "~/adapters/queue/queues";
 import { reconcileDynamicMembership } from "~/adapters/sales/membership.server";
@@ -171,6 +172,9 @@ export async function handleCatalogueSnapshot(
     detail: { ...written, priceLists: priceLists.length, operationId },
   });
   log.info({ shop: shopDomain, ...written }, "Catalogue snapshot replaced");
+
+  // Product types read fresh from Shopify may move products in the store menu.
+  await requestTypeMenuUpdate(principal);
 
   // Dynamic campaigns see the whole fresh catalogue.
   const dynamic = await listDynamicActiveCampaigns(principal);

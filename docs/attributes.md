@@ -238,14 +238,18 @@ request from the **Store menu** page. Nothing in it is AI; it is the tree.
   against the catalogue's copy of the field), so a type moved in the tree
   rewrites the products beneath it, and a product that lost its type has the
   field deleted. Choosing a type on the product page writes the field at
-  once when the menu exists; clearing a choice waits for the next update.
+  once when the menu exists; clearing a choice queues an update. Every
+  write is copied into the catalogue's copy of the field, so the next run
+  compares against what Shopify holds rather than rewriting every product
+  until the next catalogue read.
 - **Collections.** Every type gets an automated collection, titled as the
   type, whose one conditions source takes the products whose path includes
   the type (`metafieldStringList`, `INCLUDES`, one value). One value per
   collection keeps every branch, however large, inside Shopify's limit of 60
   condition values per source — the first version listed every type beneath
-  a parent and broke on large branches. A collection made before is renamed
-  and its source replaced; one a merchant deleted is made again; only new
+  a parent and broke on large branches. A collection made before and still
+  titled as its type (on the same field definition) is left alone; one whose
+  type was renamed is renamed and its source replaced; one a merchant deleted is made again; only new
   ones are published to the online store (the publication whose catalog
   title is *Online Store*). Description, image and handle are the
   merchant's.
@@ -258,6 +262,17 @@ request from the **Store menu** page. Nothing in it is AI; it is the tree.
   is titled *Product types*, handle `product-types`; the one this app made is
   updated, else one with that handle is taken over, else one is created. Its
   items are replaced whole on every run.
+
+**Automatic updates.** Once the menu has been made (the row has a menu id),
+it follows changes without a press (`requestTypeMenuUpdate`,
+`adapters/products/type-menu-updates.server.ts`): a save that changes the
+type tree, a cleared product type, a `products/update` that changed the
+catalogue, and every catalogue snapshot each queue an `automatic` run one
+minute later, under its own singleton key (`typeMenuAutoKey`) so a burst of
+changes is one run and a waiting update never swallows a press. An automatic
+run claims the row as a press does; if a run is moving it queues itself
+again behind it. With nothing changed a run is a handful of reads and one
+menu write.
 
 The run is the `type-menu-sync` job (`jobs/handlers/type-menu-sync.ts`,
 Shopify calls in `adapters/shopify/type-menu.ts`): type field, then
@@ -280,13 +295,15 @@ the queue. The finished run logs `attribute_schema.menu_made`.
 
 The export portal's AI suggests a product's type and the values of its
 empty attributes; a person reviews the suggestion and applies what they
-keep. Nothing the AI says reaches Shopify, or `product_type_assignment`,
-until it is applied. The AI is the portal's (its categorizer, Claude
+keep, or a source set to apply on its own applies a confident one (§
+Applying on its own). Nothing the AI says reaches Shopify, or
+`product_type_assignment`, until it is applied. The AI is the portal's (its categorizer, Claude
 Haiku); this app only describes its own catalogue model to it and checks
 what comes back (docs/sources.md § AI autofill).
 
 **Asking.** *Autofill with AI* on a product's **Attributes** tab; *Autofill
-with AI* on the products selected in **Products**; *Autofill* per row and
+with AI* on the products selected in **Products**, or *Autofill all with
+AI* in its header for the whole catalogue (below); *Autofill* per row and
 *Autofill selected* on **Sources › Review**; or, for a source switched on
 under **Sources › AI categorization**, each new product as it arrives
 (docs/sources.md § AI categorization per source). Each marks
@@ -318,6 +335,19 @@ being worked on is not asked twice. Per product (`suggestAutofill`,
    variant the product has; a field that has a value, a blocked field, an
    unknown attribute and a repeat are dropped. What is left is stored with
    its display text (labels, unit).
+
+**Autofill all** (`requestAutofillAll`) asks about every catalogue product
+the AI has not been asked about yet — no row, or a failed one; a suggestion
+queued, running, waiting, applied or discarded is passed over, so a second
+run resumes rather than asking again. It does not queue the catalogue at
+once: one `product-autofill` job carrying `all: { after }` takes the next
+ten (`nextUnaskedProducts`, in product id order), marks them queued, suggests
+for them and hands over to a fresh job from the last product it looked at,
+so no product waits long enough to be taken for lost. It stops at the end of
+the catalogue, or as soon as the portal cannot be asked, rather than failing
+every product left. Its dialog offers *Apply automatically when the AI is
+confident* (on by default), which applies as a source does (§ Applying on
+its own).
 
 A product whose suggestion will never come — its job died with the worker
 or never ran — is failed when it is next read (`failStaleAutofills`: running
@@ -351,6 +381,20 @@ are written only if the product's type is the one they were suggested for;
 a person who rejected the type keeps their attributes untouched. The row
 becomes `applied` (or `discarded`) once, so a second tab cannot apply what
 the first discarded, and `product.autofill_applied` is logged.
+
+**Applying on its own.** A source switched to *Apply when confident*
+(`source_autofill.autoApply`, docs/sources.md § AI categorization per
+source) has its suggestion applied the moment it is saved, through the same
+`applyAutofill` with every value kept, when `confidentEnough` says so: a
+type the categorizer chose with confidence of at least
+`AUTO_APPLY_CONFIDENCE` (0.8), or a type the product already had with at
+least one value to fill. "No type fits" and anything less sure wait on
+Review as usual. The type is recorded as chosen by `source:<id>`, the event
+carries `automatic: true`, and a refusal from Shopify leaves the suggestion
+waiting rather than failed. The job carries the choice (`autoApply`,
+`requestedBy`), so only a source's own requests and an *Autofill all*
+with the box ticked apply on their own; *Autofill with AI* on chosen
+products always waits for review.
 
 ## Known limits
 
