@@ -116,7 +116,8 @@ jobs:
     needs: [check, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # The Docker Hub and SSH secrets are environment secrets on "Recharge".
+    # Docker Hub secrets are environment secrets on "Recharge"; the PROD_DEPLOY_*
+    # SSH secrets are organization secrets.
     environment: Recharge
     concurrency:
       group: deploy-prod
@@ -147,10 +148,10 @@ jobs:
 
       - uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
+          host: ${{ secrets.PROD_DEPLOY_HOST }}
           username: deploy
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
+          key: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.PROD_DEPLOY_FINGERPRINT }}
           timeout: 30s
           command_timeout: 15m
           script: |

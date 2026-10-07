@@ -435,16 +435,17 @@ an older release by hand, re-run that commit's workflow run, or run
 `export APP_IMAGE=time4action/recharge-hub:<sha>` and `docker compose up -d` on
 the server.
 
-Secrets, on the `Recharge` GitHub environment (the `deploy` job declares
+Secrets, on the `Recharge` GitHub environment or, for `PROD_DEPLOY_*`, the
+organization (the `deploy` job declares
 `environment: Recharge`; repository secrets would work too):
 
 | Secret               | Value                                               |
 | -------------------- | --------------------------------------------------- |
 | `DOCKERHUB_USERNAME` | Docker Hub account that can push the image          |
 | `DOCKERHUB_TOKEN`    | Docker Hub access token (read/write) for it         |
-| `DEPLOY_HOST`        | The VM's hostname or IP                             |
-| `DEPLOY_SSH_KEY`     | Private key whose public half is in `deploy`'s `authorized_keys` |
-| `DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint, the `SHA256:…` part. The deploy action's Go SSH client prefers the ECDSA host key, so use `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` (the ED25519 one fails with "host key fingerprint mismatch") |
+| `PROD_DEPLOY_HOST`        | The VM's hostname or IP                             |
+| `PROD_DEPLOY_SSH_KEY`     | Private key whose public half is in `deploy`'s `authorized_keys` |
+| `PROD_DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint, the `SHA256:…` part. The deploy action's Go SSH client prefers the ECDSA host key, so use `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` (the ED25519 one fails with "host key fingerprint mismatch") |
 
 The `deploy` user must be in the `docker` group, be able to read the checkout,
 and have `curl` available.
