@@ -441,7 +441,7 @@ The image is pushed and pulled with the workflow's own `GITHUB_TOKEN`
 (`packages: write` on the deploy job), so there is no registry secret; the
 `org.opencontainers.image.source` label in the Dockerfile links the package to
 this repository. SSH secrets, as organization secrets (environment or
-repository secrets on `Recharge` would work too):
+repository secrets on `production` would work too):
 
 | Secret               | Value                                               |
 | -------------------- | --------------------------------------------------- |

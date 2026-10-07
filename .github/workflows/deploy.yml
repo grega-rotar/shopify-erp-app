@@ -118,7 +118,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The PROD_DEPLOY_* SSH secrets are organization secrets. GHCR needs none:
     # the job's own GITHUB_TOKEN pushes the image and lets the VM pull it.
-    environment: Recharge
+    environment: production
     permissions:
       contents: read
       packages: write
