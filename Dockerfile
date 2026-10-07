@@ -35,6 +35,8 @@ COPY --from=build /app/public ./public
 ARG GIT_SHA=unknown
 ENV APP_VERSION=$GIT_SHA
 LABEL org.opencontainers.image.revision=$GIT_SHA
+# Links the GHCR package to the repository (visibility + access follow it).
+LABEL org.opencontainers.image.source=https://github.com/recharge-si/recharge-hub
 
 EXPOSE 3000
 

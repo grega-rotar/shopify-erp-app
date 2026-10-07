@@ -10,10 +10,10 @@
 name: recharge-hub
 
 x-app: &app
-  # Built and pushed from a workstation with scripts/build-and-push.bat; the
-  # server only pulls. The app VM does not have the memory to run a Vite build
+  # Built and pushed to GHCR by CI (.github/workflows/deploy.yml); the server
+  # only pulls. The app VM does not have the memory to run a Vite build
   # alongside PostgreSQL, so there is deliberately no `build:` here.
-  image: ${APP_IMAGE:-time4action/recharge-hub:latest}
+  image: ${APP_IMAGE:-ghcr.io/recharge-si/recharge-hub:latest}
   env_file: .env
   environment:
     NODE_ENV: production

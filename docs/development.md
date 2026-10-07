@@ -379,8 +379,8 @@ set-up shop).
 ## Production Compose
 
 The production VM has too little memory to build the image next to PostgreSQL,
-so the image is built elsewhere, pushed to Docker Hub as
-`time4action/recharge-hub`, and only pulled on the server. `docker-compose.yml`
+so the image is built by CI, pushed to GitHub Container Registry as
+`ghcr.io/recharge-si/recharge-hub`, and only pulled on the server. `docker-compose.yml`
 has no `build:` for that reason; `APP_IMAGE` in `.env` overrides the tag.
 
 ### Continuous deployment
@@ -408,7 +408,9 @@ commit SHA and `latest`, then SSHes to the VM as the `deploy` user and, in
 `/data/stack/apps/recharge-hub`:
 
 1. records the image the running `web` container uses;
-2. runs `docker compose pull migrate web worker` (up to three attempts) and
+2. logs in to `ghcr.io` with the job's own `GITHUB_TOKEN` (valid only while the
+   job runs; logged out again on exit, so the VM stores no registry
+   credential), runs `docker compose pull migrate web worker` (up to three attempts) and
    `docker compose up -d --remove-orphans` with `APP_IMAGE` exported to the
    new SHA (the shell variable wins over `.env`);
 3. waits up to 60 seconds for `http://127.0.0.1:3192/healthz` to answer 200;
@@ -432,17 +434,17 @@ keep migrations additive (expand first, remove columns in a later release).
 It only swaps images: changes to `docker-compose.yml`, `ops/`, or `.env` on the
 server are still applied by hand with `git pull` in the checkout. To go back to
 an older release by hand, re-run that commit's workflow run, or run
-`export APP_IMAGE=time4action/recharge-hub:<sha>` and `docker compose up -d` on
-the server.
+`export APP_IMAGE=ghcr.io/recharge-si/recharge-hub:<sha>` and `docker compose up -d` on
+the server (after a `docker login ghcr.io`, the package is private).
 
-Secrets, on the `Recharge` GitHub environment or, for `PROD_DEPLOY_*`, the
-organization (the `deploy` job declares
-`environment: Recharge`; repository secrets would work too):
+The image is pushed and pulled with the workflow's own `GITHUB_TOKEN`
+(`packages: write` on the deploy job), so there is no registry secret; the
+`org.opencontainers.image.source` label in the Dockerfile links the package to
+this repository. SSH secrets, as organization secrets (environment or
+repository secrets on `Recharge` would work too):
 
 | Secret               | Value                                               |
 | -------------------- | --------------------------------------------------- |
-| `DOCKERHUB_USERNAME` | Docker Hub account that can push the image          |
-| `DOCKERHUB_TOKEN`    | Docker Hub access token (read/write) for it         |
 | `PROD_DEPLOY_HOST`        | The VM's hostname or IP                             |
 | `PROD_DEPLOY_SSH_KEY`     | Private key whose public half is in `deploy`'s `authorized_keys` |
 | `PROD_DEPLOY_FINGERPRINT` | The VM's SSH host key fingerprint, the `SHA256:…` part. The deploy action's Go SSH client prefers the ECDSA host key, so use `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` (the ED25519 one fails with "host key fingerprint mismatch") |
@@ -467,30 +469,6 @@ docker compose restart postgres
 Dependabot (`.github/dependabot.yml`) opens at most one grouped pull request a
 month each for npm minor/patch updates and for GitHub Actions; they pass through
 `check` like any other pull request.
-
-### Build and push (workstation)
-
-Still works for a manual or off-`main` build. `scripts\build.bat` bakes the
-current `HEAD` into `APP_VERSION` as CI does.
-
-```bat
-docker login
-scripts\build-and-push.bat --latest
-```
-
-Tag flags are shared by `scripts\build.bat`, `scripts\push.bat` and
-`scripts\build-and-push.bat`, and combine:
-
-| Flag         | Tag                           |
-| ------------ | ----------------------------- |
-| *(none)*     | `latest`                      |
-| `--latest`   | `latest`                      |
-| `--dev`      | `dev`                         |
-| `--sha`      | short git commit hash         |
-| `--tag NAME` | `NAME` (repeatable)           |
-
-`build.bat --latest --sha` tags one build twice; `push.bat --latest --sha`
-pushes both.
 
 ### Server
 
