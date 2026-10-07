@@ -4,6 +4,7 @@ import {
   AUTOFILL_REQUEST_LIMIT,
   applyAutofill,
   autofillAvailability,
+  requestApplyAutofill,
   requestAutofill,
 } from "~/adapters/products/autofill.server";
 import type { Principal } from "~/domain/types";
@@ -11,9 +12,17 @@ import type { Principal } from "~/domain/types";
 /**
  * The list actions of AI autofill (docs/attributes.md § AI autofill),
  * shared by Sources › Review and Products: ask for suggestions on many
- * products, and apply everything suggested for many. Null for any other
+ * products, and apply everything suggested for many — while the page waits
+ * up to `APPLY_BATCH`, in the background beyond it. Null for any other
  * intent, so a route can try this first and fall through to its own.
  */
+
+export type ListActionResult = {
+  ok: boolean;
+  message: string;
+  /** Work goes on in the background; the page should keep re-reading. */
+  background?: boolean;
+};
 
 /** Suggestions applied in one press: each is a few Shopify calls. */
 export const APPLY_BATCH = 25;
@@ -24,7 +33,7 @@ export async function autofillListAction(input: {
   actor: string | null;
   intent: string;
   ids: readonly string[];
-}): Promise<{ ok: boolean; message: string } | null> {
+}): Promise<ListActionResult | null> {
   const { admin, principal, actor, intent, ids } = input;
 
   if (intent === "autofill") {
@@ -46,8 +55,19 @@ export async function autofillListAction(input: {
   }
 
   if (intent === "apply-autofill") {
-    if (ids.length > APPLY_BATCH)
-      return { ok: false, message: `Apply at most ${APPLY_BATCH} at a time.` };
+    if (ids.length > APPLY_BATCH) {
+      if (ids.length > AUTOFILL_REQUEST_LIMIT)
+        return {
+          ok: false,
+          message: `Apply at most ${AUTOFILL_REQUEST_LIMIT} at a time, or use Apply all.`,
+        };
+      await requestApplyAutofill(principal, actor, ids);
+      return {
+        ok: true,
+        background: true,
+        message: `Applying ${ids.length} suggestions in the background. Each product leaves AI review as it is applied.`,
+      };
+    }
     const outcomes = [];
     for (const id of ids)
       outcomes.push(

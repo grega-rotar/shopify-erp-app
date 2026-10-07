@@ -3,11 +3,13 @@ import { z } from "zod";
 
 import {
   failAutofill,
+  nextReadyAutofills,
   nextUnaskedProducts,
   queueAutofills,
 } from "~/adapters/db/repositories/product-autofill.server";
 import { getLogger } from "~/adapters/observability/logger.server";
 import {
+  applyAutofill,
   autofillAvailability,
   suggestAutofill,
 } from "~/adapters/products/autofill.server";
@@ -24,6 +26,16 @@ export const productAutofillJobSchema = z.object({
    * product id (null from the start), instead of a list.
    */
   all: z.object({ after: z.string().nullable() }).optional(),
+  /**
+   * Apply suggestions instead of asking for them: these products, or with
+   * `ids` null every suggestion waiting, walked from after `after`.
+   */
+  apply: z
+    .object({
+      ids: z.array(z.string().min(1)).max(250).nullable(),
+      after: z.string().nullable(),
+    })
+    .optional(),
   /** False for a source set to suggest the type only. */
   fillAttributes: z.boolean().default(true),
   /** True for a source set to apply confident suggestions at once. */
@@ -47,9 +59,20 @@ const PASS = 10;
  * leaving the products shown as queued meanwhile.
  */
 export async function handleProductAutofill(job: Job<unknown>): Promise<void> {
-  const { shopDomain, productIds, fillAttributes, autoApply, requestedBy, all } =
-    productAutofillJobSchema.parse(job.data);
+  const {
+    shopDomain,
+    productIds,
+    fillAttributes,
+    autoApply,
+    requestedBy,
+    all,
+    apply,
+  } = productAutofillJobSchema.parse(job.data);
   const principal = serviceToken(shopDomain, "product-autofill");
+  if (apply) {
+    await applyPass(principal, shopDomain, apply, requestedBy);
+    return;
+  }
   if (all) {
     await autofillAllPass(principal, shopDomain, all.after, {
       fillAttributes,
@@ -137,5 +160,57 @@ async function autofillAllPass(
       fillAttributes: options.fillAttributes,
       autoApply: options.autoApply,
       requestedBy: options.requestedBy,
+    });
+}
+
+/**
+ * One pass of a background apply (docs/attributes.md § AI autofill): ten
+ * suggestions applied as a press of Apply applies them, then the rest
+ * handed to a fresh job. A suggestion Shopify refuses stays waiting and is
+ * stepped over; one already decided is a no-op.
+ */
+async function applyPass(
+  principal: ReturnType<typeof serviceToken>,
+  shopDomain: string,
+  apply: { ids: string[] | null; after: string | null },
+  actor: string | null,
+): Promise<void> {
+  const log = getLogger();
+  const batch = apply.ids
+    ? apply.ids.slice(0, PASS)
+    : await nextReadyAutofills(principal, apply.after, PASS);
+  if (batch.length === 0) return;
+
+  const { admin } = await unauthenticated.admin(shopDomain);
+  for (const productId of batch) {
+    try {
+      const outcome = await applyAutofill(admin, principal, {
+        productId,
+        actor,
+        keepType: true,
+        keepValues: null,
+      });
+      if (!outcome.ok)
+        log.warn(
+          { productId, message: outcome.message },
+          "Suggestion not applied",
+        );
+    } catch (error) {
+      log.warn({ err: error, productId }, "Suggestion not applied");
+    }
+  }
+
+  const following = apply.ids
+    ? apply.ids.length > PASS
+      ? { ids: apply.ids.slice(PASS), after: null }
+      : null
+    : batch.length === PASS
+      ? { ids: null, after: batch.at(-1) ?? null }
+      : null;
+  if (following)
+    await enqueue(QUEUES.productAutofill, {
+      shopDomain,
+      apply: following,
+      requestedBy: actor,
     });
 }

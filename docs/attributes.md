@@ -366,11 +366,18 @@ Apply is disabled while the page has unsaved edits. On **Sources ›
 Review**, the *Type and attributes* column says what is waiting
 (`Suggested: Type and 4 values`, with the confidence), links to the
 product to review it, and *Apply* / *Apply suggestions* applies everything
-suggested for those products (25 at most per press). **Products** shows
+suggested for those products: up to 25 while the page waits, up to 250
+in the background (`requestApplyAutofill`). **Products** shows
 the same under each title (*AI suggestion · Type and 2 values*,
 *Autofilling…*, *Autofill failed*), has an *AI review* view of the products
 whose suggestions wait, and the same *Apply suggestions* / *Autofill with
-AI* for the products selected.
+AI* for the products selected. The AI review view also has *Apply all*,
+which applies every suggestion waiting in the background: a
+`product-autofill` job carrying `apply: { ids: null, after }` applies the
+next ten (`nextReadyAutofills`, in product id order) and hands over from the
+last, so a suggestion Shopify refuses stays waiting and is stepped over
+rather than tried for ever. The page re-reads every few seconds while it
+runs.
 
 **Applying** (`applyAutofill`) goes through the paths a person's own edits
 take: the kept type through `chooseProductType` (the assignment, recorded

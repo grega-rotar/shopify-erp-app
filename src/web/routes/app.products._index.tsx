@@ -13,11 +13,13 @@ import {
 
 import { getAttributeSchema } from "~/adapters/db/repositories/attribute-schema.server";
 import {
+  countReadyAutofills,
   listAutofills,
   readyAutofillProductIds,
 } from "~/adapters/db/repositories/product-autofill.server";
 import {
   autofillAvailability,
+  requestApplyAutofill,
   requestAutofillAll,
 } from "~/adapters/products/autofill.server";
 
@@ -46,6 +48,7 @@ import {
   useProductColumns,
 } from "~/web/components/product-list-view";
 import { BulkBar, useSelection } from "~/web/components/bulk-selection";
+import { ConfirmModal } from "~/web/components/confirm-modal";
 import {
   autofillSummary,
   isAutofillWorking,
@@ -158,6 +161,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const formData = await request.formData();
+  if (formData.get("intent") === "apply-all") {
+    const principal = principalFromSession(session);
+    const waiting = await countReadyAutofills(principal);
+    if (waiting === 0)
+      return { ok: false, message: "No suggestions are waiting." };
+    await requestApplyAutofill(principal, actorFromSession(session), null);
+    return {
+      ok: true,
+      background: true,
+      message: `Applying all ${waiting} suggestions in the background. Each product leaves AI review as it is applied.`,
+    };
+  }
   if (formData.get("intent") === "autofill-all") {
     const principal = principalFromSession(session);
     const available = await autofillAvailability(principal);
@@ -329,8 +344,14 @@ export default function Products() {
       ),
     [rows],
   );
+  // A background apply empties AI review a few products at a time.
+  const applying =
+    fetcher.data?.ok === true &&
+    "background" in fetcher.data &&
+    fetcher.data.background === true &&
+    reviewCount > 0;
   useLiveRevalidation({
-    active: rows.some((row) => isAutofillWorking(row.autofill)),
+    active: applying || rows.some((row) => isAutofillWorking(row.autofill)),
   });
   useEffect(() => {
     if (!result?.ok) return;
@@ -494,11 +515,26 @@ export default function Products() {
                 />
               </s-grid>
               {review ? (
-                <s-text color="subdued">
-                  Products whose AI suggestion waits for a person. Open one to
-                  check it and apply it, then move on to the next; or select
-                  several and apply their suggestions as they are.
-                </s-text>
+                <s-grid
+                  gridTemplateColumns="1fr auto"
+                  gap="base"
+                  alignItems="center"
+                >
+                  <s-text color="subdued">
+                    Products whose AI suggestion waits for a person. Open one to
+                    check it and apply it, then move on to the next; or select
+                    several, or all, and apply their suggestions as they are.
+                  </s-text>
+                  {reviewCount > 0 ? (
+                    <s-button
+                      command="--show"
+                      commandFor="apply-all"
+                      disabled={applying}
+                    >
+                      {applying ? "Applying…" : `Apply all (${reviewCount})`}
+                    </s-button>
+                  ) : null}
+                </s-grid>
               ) : null}
               <ProductFilterChips
                 filters={filters}
@@ -687,6 +723,22 @@ export default function Products() {
             : []),
         ]}
       />
+      <ConfirmModal
+        id="apply-all"
+        heading={`Apply all ${reviewCount} suggestions?`}
+        confirmLabel="Apply all"
+        tone="neutral"
+        onConfirm={() =>
+          void fetcher.submit({ intent: "apply-all" }, { method: "post" })
+        }
+      >
+        <s-paragraph>
+          Every suggestion waiting in AI review is applied as it is: the product
+          type is set and the suggested values fill fields that are still empty.
+          Nothing already filled is overwritten. It runs in the background, ten
+          products at a time; you can leave this page.
+        </s-paragraph>
+      </ConfirmModal>
       <AutofillAllModal
         onConfirm={(autoApply) =>
           void fetcher.submit(
@@ -714,10 +766,10 @@ function AutofillAllModal({
       <s-stack direction="block" gap="base">
         <s-paragraph>
           The AI suggests a product type and fills empty attributes for every
-          product it has not been asked about yet, ten at a time. Products
-          with a suggestion waiting, applied or discarded are skipped; ones
-          that failed are asked again. A large catalogue takes a while; you
-          can leave this page.
+          product it has not been asked about yet, ten at a time. Products with
+          a suggestion waiting, applied or discarded are skipped; ones that
+          failed are asked again. A large catalogue takes a while; you can leave
+          this page.
         </s-paragraph>
         <s-checkbox
           label="Apply automatically when the AI is confident"

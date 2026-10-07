@@ -162,6 +162,23 @@ async function readyIdsInCatalogue(principal: Principal): Promise<string[]> {
   return rows.map((row) => row.productId).filter((id) => ids.has(id));
 }
 
+/**
+ * The next suggestions waiting for a person, after `after` in product id
+ * order: what "apply all" works through a pass at a time. A suggestion that
+ * could not be applied stays waiting, so the walk goes by id rather than
+ * starting over, and cannot loop on it.
+ */
+export async function nextReadyAutofills(
+  principal: Principal,
+  after: string | null,
+  limit: number,
+): Promise<string[]> {
+  return (await readyIdsInCatalogue(principal))
+    .filter((id) => after === null || id > after)
+    .sort()
+    .slice(0, limit);
+}
+
 /** Suggestions waiting for a person, for a count on the review page. */
 export async function countReadyAutofills(
   principal: Principal,

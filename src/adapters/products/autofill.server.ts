@@ -465,6 +465,26 @@ export async function requestAutofillAll(
   return count;
 }
 
+/**
+ * Applies suggestions in the background, as a press of Apply would, ten a
+ * pass: these products (a selection too large to apply while the page
+ * waits), or, with null, every suggestion waiting.
+ */
+export async function requestApplyAutofill(
+  principal: Principal,
+  actor: string | null,
+  productIds: readonly string[] | null,
+): Promise<void> {
+  await enqueue(QUEUES.productAutofill, {
+    shopDomain: shopDomainOf(principal),
+    apply: {
+      ids: productIds ? productIds.slice(0, AUTOFILL_REQUEST_LIMIT) : null,
+      after: null,
+    },
+    requestedBy: actor,
+  });
+}
+
 /** At most this many products per request; the job works through them ten at a time. */
 export const AUTOFILL_REQUEST_LIMIT = 250;
 
