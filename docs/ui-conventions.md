@@ -97,6 +97,9 @@ reflows (`SettingRows`, `web/components/source-editor`).
 A page shows what is true now without a reload (`useLiveRevalidation`, `web/lib/live`):
 it re-reads its loader every 5 s while something it shows is happening (a run, a sync),
 every 30 s otherwise, never while the tab is hidden, and at once when the tab comes back.
+A read waits for the one before it, but not for ever: one still unanswered after 15 s is
+replaced, so a request that hangs cannot freeze the page until a reload
+(`tests/e2e/specs/store-menu.spec.ts` stalls one to prove it).
 After an action whose effect the next read may not show yet — a run the portal has queued
 but not listed, a search index catching up — `useWatchWindow` keeps the fast rate for a
 while. What an action removed leaves the page at once rather than on the next read

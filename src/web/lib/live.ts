@@ -10,12 +10,17 @@ import { useRevalidator } from "react-router";
  * run starting, a count growing, a row someone else dealt with — reaches
  * the page on its own. Nothing is read while the tab is hidden, and the
  * page re-reads the moment it is shown or focused again. A read never
- * overlaps another.
+ * overlaps another — unless it has been waiting `STUCK_MS`: a request that
+ * never answers (a dropped connection, a session check that hangs) would
+ * otherwise stop every later read and freeze the page on its last answer
+ * until a reload. A new read replaces it; the router abandons the old one.
  *
  * The revalidator is held in a ref: it is a new object whenever its state
  * changes, and as an effect dependency it would rebuild the timer on
  * every read.
  */
+const STUCK_MS = 15_000;
+
 export function useLiveRevalidation({
   active,
   activeEveryMs = 5_000,
@@ -29,12 +34,18 @@ export function useLiveRevalidation({
   const revalidator = useRevalidator();
   const ref = useRef(revalidator);
   ref.current = revalidator;
+  // When the read now in flight started, or null while none is.
+  const busySince = useRef<number | null>(null);
+  if (revalidator.state === "idle") busySince.current = null;
+  else busySince.current ??= Date.now();
 
   useEffect(() => {
     if (!active && idleEveryMs === null) return;
     const read = () => {
       if (document.visibilityState !== "visible") return;
-      if (ref.current.state !== "idle") return;
+      const since = busySince.current;
+      if (since !== null && Date.now() - since < STUCK_MS) return;
+      busySince.current = Date.now();
       void ref.current.revalidate();
     };
     const timer = setInterval(
